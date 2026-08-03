@@ -1,0 +1,23 @@
+{
+  "_comment": [
+    "Example ~/.pi/agent/models.json adding a LOCAL Gemma provider for pi.",
+    "pi speaks OpenAI-compatible provider APIs; point it at any OpenAI-compatible",
+    "endpoint (llama.cpp llama-server or vLLM). The 'api' value selects pi's API",
+    "implementation: use 'openai-completions' for an OpenAI-compatible /v1/chat",
+    "endpoint (verified with pi 0.80.x). Field names follow pi's provider schema;",
+    "adjust to your installed pi version if needed.",
+    "Run pi with:  pi --provider local-gemma --model gemma-3-12b-it"
+  ],
+  "providers": {
+    "local-gemma": {
+      "api": "openai-completions",
+      "baseUrl": "http://localhost:8000/v1",
+      "apiKey": "not-needed",
+      "models": [
+        { "id": "gemma-3-12b-it", "name": "Gemma 3 12B (local)", "contextWindow": 131072 },
+        { "id": "gemma-3-4b-it", "name": "Gemma 3 4B (local)", "contextWindow": 131072 },
+        { "id": "gemma-2-9b-it", "name": "Gemma 2 9B (local)", "contextWindow": 8192 }
+      ]
+    }
+  }
+}

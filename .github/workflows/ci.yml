@@ -1,0 +1,73 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: python -m pip install -e ".[docs,review,tokenizer,dev]"
+      - name: Lint
+        run: ruff check src tests
+      - name: Type check
+        run: mypy
+      - name: Test
+        run: pytest -q
+      - name: Doctor
+        run: secagent doctor
+
+  pi-extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Typecheck pi extension
+        working-directory: pi
+        run: |
+          npm install --no-audit --no-fund
+          npx tsc --noEmit
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install (with docs)
+        run: python -m pip install -e ".[docs]"
+      - name: Build docs (warnings = errors)
+        run: python -m sphinx -b html -W --keep-going docs docs/_build/html
+
+  supply-chain:
+    # CMMC-5 / NIST 800-171 CM.3.4.1, RA.3.11.2, SI.3.14.1.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install (with supply-chain tools)
+        run: python -m pip install -e ".[docs,review,tokenizer,supplychain]"
+      - name: Generate SBOM (CycloneDX)
+        run: cyclonedx-py environment -o sbom.json
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+      - name: Dependency vulnerability scan (pip-audit)
+        # Report findings without blocking merges; remediation is a tracked process
+        # (upstream/base-image CVEs are handled via patch cadence, not PR gating).
+        continue-on-error: true
+        run: pip-audit --progress-spinner off

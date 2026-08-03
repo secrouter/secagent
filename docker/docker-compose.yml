@@ -1,0 +1,86 @@
+# secagent compose stack.
+#
+# pi is the agent runtime; secagent is the toolset it drives. The model server is
+# EXTERNAL on purpose — point SECAGENT_LLM__BASE_URL (and pi's provider config) at any
+# OpenAI-compatible endpoint. The `llm` service below is an optional convenience.
+#
+# One agent image (built once) backs all roles; each service overrides the command.
+
+x-agent-build: &agent-build
+  build:
+    context: ..
+    dockerfile: docker/agent.Dockerfile
+
+services:
+  # Optional local model server (swap for vLLM if you have a GPU).
+  llm:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    command: >
+      -m /models/gemma-3-12b-it-Q4_K_M.gguf
+      --host 0.0.0.0 --port 8000 --ctx-size 8192
+    volumes:
+      - ./models:/models:ro
+    ports:
+      - "8000:8000"
+
+  # Interactive pi deep-dive agent (run: docker compose run --rm pi).
+  pi:
+    <<: *agent-build
+    depends_on: [llm]
+    stdin_open: true
+    tty: true
+    environment:
+      SECAGENT_REPO: "/repo"
+      SECAGENT_LLM__BASE_URL: "http://llm:8000/v1"
+    volumes:
+      - ./repo:/repo
+      - ./pi-config:/home/secagent/.pi   # put models.json here
+
+  # Deterministic Sphinx + Draw.io docs build (good for CI).
+  docs:
+    <<: *agent-build
+    depends_on: [llm]
+    command: ["docs", "build", "/repo", "-o", "/out"]
+    entrypoint: ["secagent"]
+    environment:
+      SECAGENT_LLM__BASE_URL: "http://llm:8000/v1"
+      SECAGENT_LLM__MODEL: "gemma-3-12b-it"
+    volumes:
+      - ./repo:/repo:ro
+      - ./out:/out
+
+  # GitLab MR review webhook service (UC100 automation).
+  review:
+    <<: *agent-build
+    depends_on: [llm]
+    command: ["review", "serve", "--host", "0.0.0.0", "--port", "8080"]
+    entrypoint: ["secagent"]
+    ports:
+      - "8080:8080"
+    environment:
+      SECAGENT_LLM__BASE_URL: "http://llm:8000/v1"
+      SECAGENT_GITLAB__URL: "https://gitlab.example.com"
+      SECAGENT_GITLAB__TOKEN: "${GITLAB_TOKEN}"
+      SECAGENT_GITLAB__WEBHOOK_SECRET: "${GITLAB_WEBHOOK_SECRET}"
+      SECAGENT_GITLAB__BOT_USERNAME: "secagent-bot"
+      SECAGENT_FIPS__REQUIRE_FIPS: "true"
+      # On a non-FIPS host (e.g. local dev), set this to "true" to run anyway:
+      # SECAGENT_FIPS__ALLOW_NON_FIPS: "true"
+    volumes:
+      - ./repo:/repo:ro
+
+  # UC3: C/C++ static analysis (IKOS). Opt-in — only built/started with the
+  # "analysis" profile, since the IKOS toolchain is heavy:
+  #   docker compose --profile analysis build analysis
+  #   docker compose --profile analysis run --rm analysis \
+  #       analyze run /repo /repo/src/foo.c -o /out
+  analysis:
+    profiles: ["analysis"]
+    build:
+      context: ..
+      dockerfile: docker/analysis.Dockerfile
+    environment:
+      SECAGENT_REPO: "/repo"
+    volumes:
+      - ./repo:/repo:ro
+      - ./analysis-out:/out

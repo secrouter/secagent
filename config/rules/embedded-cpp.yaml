@@ -1,0 +1,316 @@
+# secagent UC4 rule set: memory & stability heuristics for C/C++ embedded systems.
+#
+# This file is the "simple way to configure the scan" — the same idea as the review
+# persona (config/alignment/*.yaml). Edit it, add/remove rules, or point
+# scan.rules_profile at another file; the scanner loads it fresh on every run.
+#
+# The rules are distilled from widely used safety/embedded standards:
+#   - NASA/JPL "The Power of Ten" (Holzmann, 2006)
+#   - MISRA C:2012
+#   - SEI CERT C Coding Standard
+#   - Barr Group Embedded C Coding Standard (BARR-C:2018)
+# They are HEURISTICS for an LLM reviewer, not a certified checker — tune to taste.
+
+name: "embedded-cpp"
+description: >
+  Heuristic memory-safety and stability rules for C/C++ embedded/real-time systems.
+
+# Scanner behaviour (mirrors persona verbosity/limits).
+settings:
+  languages: [C, C++]        # scan only C/C++ files with this profile
+  # Report findings at or above this severity: critical > high > medium > low > info.
+  min_severity: "low"
+  # Cap findings reported per file (keeps local-model output bounded).
+  max_findings_per_file: 20
+  # Categories to emphasise (informational; the model weights these first).
+  focus: [memory, buffer, pointer, integer, control-flow, concurrency, resource]
+
+rules:
+  # --- Memory management -----------------------------------------------------
+  - id: MEM-001
+    title: No dynamic memory allocation after initialization
+    category: memory
+    severity: high
+    guidance: >
+      Flag malloc/calloc/realloc/free or new/delete used outside startup/init code.
+      Heap use in steady state risks fragmentation, nondeterministic latency, and
+      out-of-memory failures on constrained targets.
+    references: ["JPL Power of Ten #3", "MISRA C:2012 Dir 4.12"]
+  - id: MEM-002
+    title: Check allocations that can fail, and delete the checks that cannot
+    category: memory
+    severity: high
+    guidance: >
+      malloc/calloc/realloc return NULL on failure: flag a pointer from them used
+      without a non-NULL check. Plain `new`/`new[]` do NOT - they throw, so a NULL
+      check after one is DEAD CODE and is itself the defect: flag the check, never its
+      absence. Do not flag a check after `new (std::nothrow)`, which really can return
+      null.
+    references: ["CERT MEM52-C"]
+  - id: MEM-003
+    title: No use-after-free; null out freed pointers
+    category: memory
+    severity: critical
+    guidance: >
+      Flag any dereference or pass of a pointer after it has been free()'d/deleted, and
+      freed pointers that are not set to NULL.
+    references: ["CERT MEM30-C"]
+  - id: MEM-004
+    title: No double free
+    category: memory
+    severity: high
+    guidance: >
+      Flag a pointer that can be free()'d/deleted more than once on some path.
+    references: ["CERT MEM31-C"]
+  - id: MEM-005
+    title: Guard allocation-size arithmetic against overflow
+    category: memory
+    severity: high
+    guidance: >
+      Flag size computations like count*size passed to allocators without an overflow
+      check, or allocation sizes that do not match the destination element type.
+    references: ["CERT MEM35-C"]
+  - id: MEM-006
+    title: Initialize memory before reading it
+    category: memory
+    severity: high
+    guidance: >
+      Flag reads of uninitialized stack variables, heap from malloc (not calloc), or
+      struct fields used before assignment - but ONLY when the declaration or the
+      assignment is visible in the file you were given. You are shown one source file
+      and no headers, so a C++ class member is declared somewhere you cannot see and
+      may well carry an initializer there. Never infer that a member is uninitialized
+      from its absence: if you cannot see where it is declared, say nothing.
+    references: ["CERT EXP33-C"]
+
+  # --- Buffers & bounds ------------------------------------------------------
+  - id: BUF-001
+    title: No unbounded string/IO functions
+    category: buffer
+    severity: critical
+    guidance: >
+      Flag gets, strcpy, strcat, sprintf, scanf("%s"), and similar without a length
+      bound. Prefer bounded forms (strncpy/strncat/snprintf) with correct sizes.
+    references: ["CERT STR31-C", "BARR-C:2018"]
+  - id: BUF-002
+    title: Bounds-check array/buffer indices (no off-by-one)
+    category: buffer
+    severity: high
+    guidance: >
+      Flag array or buffer accesses whose index is not validated against the buffer
+      length, and classic off-by-one (<= length) errors.
+    references: ["CERT ARR30-C"]
+  - id: BUF-003
+    title: Validate memcpy/memmove/memset sizes
+    category: buffer
+    severity: high
+    guidance: >
+      Flag mem* calls whose length is attacker/caller controlled or can exceed the
+      destination size.
+    references: ["CERT ARR38-C"]
+  - id: BUF-004
+    title: No variable-length arrays or large stack buffers
+    category: buffer
+    severity: medium
+    guidance: >
+      Flag VLAs (array sizes not compile-time constant) and large fixed stack arrays
+      that risk stack overflow on small targets.
+    references: ["MISRA C:2012 Rule 18.8", "BARR-C:2018"]
+
+  # --- Pointers --------------------------------------------------------------
+  - id: PTR-001
+    title: Check pointers for NULL before dereference
+    category: pointer
+    severity: high
+    guidance: >
+      Flag a dereference only when NULL is REACHABLE - the pointer comes from a call
+      that can return NULL, or some existing caller can pass NULL. If an exported
+      function merely lacks a defensive check and no current caller can pass NULL,
+      that is interface hardening: report CTL-005 instead, not this rule.
+    references: ["CERT EXP34-C"]
+  - id: PTR-002
+    title: Never return the address of a local/stack variable
+    category: pointer
+    severity: critical
+    guidance: >
+      Flag functions returning &local or a pointer to a stack buffer (dangling
+      pointer).
+    references: ["CERT DCL30-C"]
+  - id: PTR-003
+    title: Keep pointer arithmetic within array bounds
+    category: pointer
+    severity: high
+    guidance: >
+      Flag pointer arithmetic that can move outside the bounds of the referenced array
+      or mixes unrelated objects.
+    references: ["JPL Power of Ten #9", "MISRA C:2012 Rule 18.1"]
+  - id: PTR-004
+    title: Validate function pointers before calling
+    category: pointer
+    severity: high
+    guidance: >
+      Flag calls through function pointers that may be NULL or uninitialized (e.g.
+      callback tables populated at runtime).
+    references: ["BARR-C:2018"]
+  - id: PTR-005
+    title: Limit pointer indirection to two levels
+    category: pointer
+    severity: low
+    guidance: >
+      Flag more than two levels of dereferencing (e.g. ***p); it impedes review and
+      static analysis.
+    references: ["JPL Power of Ten #9"]
+
+  # --- Integer behaviour -----------------------------------------------------
+  - id: INT-001
+    title: Guard against signed integer overflow
+    category: integer
+    severity: high
+    guidance: >
+      Flag signed arithmetic (add/sub/mul) on attacker/caller-influenced values
+      without range checks; signed overflow is undefined behaviour.
+    references: ["CERT INT32-C"]
+  - id: INT-002
+    title: Guard unsigned wraparound in size/length math
+    category: integer
+    severity: medium
+    guidance: >
+      Flag unsigned subtraction/addition used for sizes or indices that can wrap to a
+      huge value.
+    references: ["CERT INT30-C"]
+  - id: INT-003
+    title: Avoid implicit narrowing or sign-changing conversions
+    category: integer
+    severity: medium
+    guidance: >
+      Flag assignments/returns that silently narrow width or change signedness,
+      especially of sizes, lengths, and loop counters.
+    references: ["MISRA C:2012 Rule 10.x"]
+  - id: INT-004
+    title: Prevent division or modulo by zero
+    category: integer
+    severity: high
+    guidance: >
+      Flag / or % where the divisor can be zero on some path.
+    references: ["CERT INT33-C"]
+  - id: INT-005
+    title: Keep shift amounts in range
+    category: integer
+    severity: medium
+    guidance: >
+      Flag shifts by a negative amount or by >= the bit width of the type.
+    references: ["CERT INT34-C"]
+
+  # --- Control flow & stability ----------------------------------------------
+  - id: CTL-001
+    title: All loops must have a fixed, provable upper bound
+    category: control-flow
+    severity: high
+    guidance: >
+      Flag loops whose termination is not statically bounded (e.g. while(1) without a
+      bounded break, or counters that may not converge).
+    references: ["JPL Power of Ten #2"]
+  - id: CTL-002
+    title: No recursion (direct or indirect)
+    category: control-flow
+    severity: high
+    guidance: >
+      Flag functions that call themselves directly or via a cycle; recursion makes
+      stack usage unbounded.
+    references: ["JPL Power of Ten #1"]
+  - id: CTL-003
+    title: Avoid goto, setjmp, and longjmp
+    category: control-flow
+    severity: medium
+    guidance: >
+      Flag goto/setjmp/longjmp; restrict to simple, analyzable control flow.
+    references: ["JPL Power of Ten #1", "MISRA C:2012 Rule 15.1"]
+  - id: CTL-004
+    title: Check return values whose failure would change what happens next
+    category: control-flow
+    severity: high
+    guidance: >
+      Flag an ignored return ONLY when failure changes program behaviour: lock or
+      semaphore acquire/release, resource close/release, allocation THAT RETURNS A
+      VALUE (malloc/calloc/realloc - NOT plain `new`/`new[]`, which throw and have no
+      return to check; `new (std::nothrow)` does), and calls whose result the
+      following code depends on. Do NOT flag a call explicitly cast to (void), an
+      event/telemetry/logging emit (e.g. CFE_EVS_SendEvent, printf), or any call whose
+      failure leaves subsequent behaviour unchanged.
+    references: ["JPL Power of Ten #7", "CERT EXP12-C"]
+  - id: CTL-005
+    title: Validate parameters and invariants at module boundaries
+    category: control-flow
+    severity: low
+    guidance: >
+      Report a public/exported function that dereferences or indexes a parameter
+      without validating it, when no current caller can actually pass a bad value.
+      This is interface hardening rather than a reachable defect, so it stays low
+      severity. When a bad value IS reachable today, use PTR-001 or BUF-002 instead.
+    references: ["JPL Power of Ten #5"]
+
+  # --- Concurrency & interrupts ----------------------------------------------
+  - id: ISR-001
+    title: Declare ISR/thread-shared variables volatile
+    category: concurrency
+    severity: high
+    guidance: >
+      Flag variables written by an ISR and read elsewhere (or vice versa) that are not
+      declared volatile, risking stale/optimized-away reads.
+    references: ["BARR-C:2018", "CERT DCL22-C"]
+  - id: ISR-002
+    title: Make access to genuinely shared multi-byte data atomic
+    category: concurrency
+    severity: high
+    guidance: >
+      Report only when you can NAME the second accessor - the other ISR, task or thread
+      that touches the same variable - and it is present in the code you were given. A
+      variable reached from a single task is not shared however global it looks, and a
+      struct field filled in one task before being published is not a race. If you
+      cannot name the second accessor, say nothing.
+    references: ["CERT CON"]
+  - id: ISR-003
+    title: Keep ISRs short and non-blocking
+    category: concurrency
+    severity: high
+    guidance: >
+      Flag malloc/free, printf, blocking waits, or long work performed inside an
+      interrupt service routine.
+    references: ["BARR-C:2018"]
+  - id: ISR-004
+    title: Prefer reentrant functions where more than one context can call them
+    category: concurrency
+    severity: low
+    guidance: >
+      Flag non-reentrant library functions (strtok, asctime, strerror, gmtime) and
+      shared static buffers. LOW severity deliberately: in a single-task program this
+      is a portability and future-maintenance concern, not a live defect. Name the
+      second ISR/task/thread when you can identify one - that is what would make it a
+      real race rather than a hardening suggestion.
+    references: ["CERT CON"]
+
+  # --- Resources & hardware --------------------------------------------------
+  - id: RES-001
+    title: Release acquired resources on every path
+    category: resource
+    severity: high
+    guidance: >
+      Flag handles, locks, mutexes, file descriptors, or peripherals acquired but not
+      released on error/early-return paths.
+    references: ["CERT FIO", "MISRA C:2012 Dir 4.13"]
+  - id: RES-002
+    title: Use volatile for memory-mapped I/O access
+    category: resource
+    severity: high
+    guidance: >
+      Flag access to hardware registers / MMIO addresses through non-volatile pointers,
+      which the compiler may cache or reorder.
+    references: ["BARR-C:2018"]
+  - id: RES-003
+    title: Bound every wait; service the watchdog
+    category: resource
+    severity: medium
+    guidance: >
+      Flag busy-waits / blocking polls on hardware status without a timeout, and long
+      operations that could starve a watchdog.
+    references: ["BARR-C:2018"]

@@ -1,0 +1,7 @@
+SecAgent
+Copyright 2026 Austin Probe
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+SecAgent is a containerized, pi-based agentic harness for coding and analysis
+workflows, with an affordance engine for context reduction. FIPS-compatible.

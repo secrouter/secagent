@@ -1,0 +1,5 @@
+[project]
+name = "sample-repo"
+version = "0.0.1"
+description = "Fixture two-service system for secagent tests."
+requires-python = ">=3.11"

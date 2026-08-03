@@ -1,0 +1,6 @@
+# Docs build dependencies (e.g. for Read the Docs).
+# Installs secagent itself so autodoc can import the package.
+sphinx>=7.2
+furo>=2024.1.29
+myst-parser>=2.0
+.

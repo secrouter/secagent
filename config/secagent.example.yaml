@@ -1,0 +1,90 @@
+# secagent example configuration.
+#
+# Copy to secagent.yaml and point SECAGENT_CONFIG at it, or pass --config.
+# Every value can also be overridden by an environment variable, e.g.
+#   SECAGENT_LLM__BASE_URL=http://gemma-host:8000/v1
+#   SECAGENT_GITLAB__TOKEN=glpat-...        (prefer a secret mount over inline)
+
+llm:
+  # Any OpenAI-compatible endpoint. Examples:
+  #   llama.cpp:  llama-server -m gemma-3-12b-it-Q4_K_M.gguf --host 0.0.0.0 --port 8000
+  #               base_url -> http://host:8000/v1
+  #   vLLM:       vllm serve google/gemma-3-12b-it --port 8000
+  #               base_url -> http://host:8000/v1
+  base_url: "http://localhost:8000/v1"
+  api_key: "not-needed"
+  model: "gemma-3-12b-it"
+  # IMPORTANT: set this to your deployed Gemma variant's real context window.
+  #   Gemma 2: 8192 | Gemma 3 1B: 32768 | Gemma 3 4B/12B/27B: 131072
+  context_window: 8192
+  context_budget_ratio: 0.6
+  max_output_tokens: 1024
+  temperature: 0.2
+  # Set false if your llama.cpp build lacks native tool-calling (uses JSON fallback).
+  native_tool_calls: true
+
+affordances:
+  store_dir: ".secagent"
+  llm_summaries: true
+  max_file_bytes: 200000
+  # Exclude the project's own version-control metadata/tooling from the architecture/
+  # doc scans: .git and submodule .git files, .gitignore/.gitmodules/.gitattributes,
+  # other VCS dirs, and repo-host platform config (.github/.gitlab). Targets VCS
+  # material by reserved name only — source that uses or implements Git as a feature
+  # is still indexed. Set false to index it too.
+  ignore_vcs: true
+  # C/C++ AST (clang): accurate functions + the inter-file call map when libclang is
+  # installed. Point at a compile_commands.json for best results (the agent can
+  # generate one); empty = autodiscover/best-effort. clang_extra_includes adds SDK dirs.
+  clang_compile_db: ""
+  clang_extra_includes: []
+  # Per-function LLM descriptions generated during a docs build (one call each, cached).
+  max_function_docs: 120
+
+gitlab:
+  url: "https://gitlab.example.com"
+  token: ""            # prefer SECAGENT_GITLAB__TOKEN / secret mount
+  bot_username: "secagent-bot"
+  verify_tls: true
+  webhook_secret: ""   # prefer SECAGENT_GITLAB__WEBHOOK_SECRET (constant-time checked)
+  webhook_allowed_ips: []   # CMMC-4: source-IP allow-list ([] = any); pair with mTLS
+  poll_interval_s: 0   # >0 enables polling fallback for air-gapped instances
+
+persona:
+  profile: "config/alignment/default.yaml"
+
+fips:
+  require_fips: false        # set true in FIPS deployments to require FIPS at startup
+  allow_non_fips: false      # escape hatch: run on a non-FIPS host even if require_fips
+                             #   (e.g. dev/test of a FIPS image); no effect if require_fips=false
+  forbid_weak_hashes: true
+
+audit:                       # CMMC-1 / NIST 800-171 AU: structured audit logging
+  enabled: false             # enable in CMMC/CUI deployments
+  path: ".secagent/audit/audit.jsonl"   # use an absolute, protected, SIEM-forwarded path
+  principal: ""              # identity recorded per event (falls back to $SECAGENT_PRINCIPAL)
+  echo_stderr: false         # also emit each record to stderr (container log capture)
+
+network:                     # CMMC-3 / NIST 800-171 AC.3.1.3, SC.3.13.6/.8
+  require_tls: false         # refuse non-HTTPS endpoints (loopback is exempt)
+  allowed_hosts: []          # egress allow-list of hostnames ([] = no allow-list)
+
+marking:                     # CMMC-6 / NIST 800-171 MP.3.8.4: CUI marking
+  banner: ""                 # e.g. "CUI" — marks generated docs + MR comments ("" = off)
+
+analysis:                    # UC3: C/C++ static analysis via IKOS
+  status_filter: "error,warning"   # IKOS --status-filter
+  analyses_filter: ""              # IKOS --analyses-filter (e.g. "*,-boa")
+  max_triage: 10                   # cap LLM-triaged findings (0 disables triage)
+
+scan:                        # UC4: LLM rule-based memory/stability scan
+  rules_profile: "config/rules/embedded-cpp.yaml"   # edit/point at your rule set
+  max_files: 50              # cap files scanned (one model call per file)
+  max_file_bytes: 40000      # cap bytes per file sent to the model
+
+testgen:                     # UC5: automatic test generation (run UC1 first)
+  out_dir: "secagent-tests"    # NEW top-level folder, separate from the project
+  unit: true                 # per-file unit tests
+  functional: true           # component input/output tests from the IO map
+  max_unit_files: 30
+  max_functional_components: 15

@@ -1,0 +1,86 @@
+{
+  "schema": "secagent-analysis/v1",
+  "language": "Rust",
+  "backend": "rust-analyzer-scip",
+  "functions": [],
+  "types": [
+    {
+      "qualified_name": "nfa::noncontiguous::NFA",
+      "kind": "struct",
+      "file": "src/nfa/noncontiguous.rs",
+      "line": 82,
+      "bases": [],
+      "interfaces": [
+        "nfa::noncontiguous::Automaton"
+      ]
+    },
+    {
+      "qualified_name": "nfa::contiguous::NFA",
+      "kind": "struct",
+      "file": "src/nfa/contiguous.rs",
+      "line": 91,
+      "bases": [],
+      "interfaces": [
+        "nfa::contiguous::Automaton"
+      ]
+    },
+    {
+      "qualified_name": "dfa::DFA",
+      "kind": "struct",
+      "file": "src/dfa.rs",
+      "line": 91,
+      "bases": [],
+      "interfaces": [
+        "dfa::Automaton"
+      ]
+    },
+    {
+      "qualified_name": "automaton::Automaton",
+      "kind": "trait",
+      "file": "src/automaton.rs",
+      "line": 198,
+      "bases": [],
+      "interfaces": []
+    },
+    {
+      "qualified_name": "util::int::Pointer",
+      "kind": "trait",
+      "file": "src/util/int.rs",
+      "line": 270,
+      "bases": [],
+      "interfaces": []
+    },
+    {
+      "qualified_name": "packed::ext::Pointer",
+      "kind": "trait",
+      "file": "src/packed/ext.rs",
+      "line": 2,
+      "bases": [],
+      "interfaces": []
+    },
+    {
+      "qualified_name": "util::prefilter::Packed",
+      "kind": "struct",
+      "file": "src/util/prefilter.rs",
+      "line": 328,
+      "bases": [],
+      "interfaces": [
+        "util::prefilter::PrefilterI"
+      ]
+    },
+    {
+      "qualified_name": "util::prefilter::PrefilterI",
+      "kind": "trait",
+      "file": "src/util/prefilter.rs",
+      "line": 99,
+      "bases": [],
+      "interfaces": []
+    }
+  ],
+  "calls": [],
+  "build": {
+    "offline": true,
+    "restored": true,
+    "system": "cargo"
+  }
+}

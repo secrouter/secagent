@@ -1,0 +1,39 @@
+{
+  "results": [
+    {
+      "checker": "boa",
+      "status": "error",
+      "file": "src/buf.c",
+      "line": 8,
+      "column": 5,
+      "function": "copy_into",
+      "message": "buffer overflow: strcpy may write past the end of g_buffer"
+    },
+    {
+      "checker": "dbz",
+      "status": "warning",
+      "file": "src/buf.c",
+      "line": 13,
+      "column": 12,
+      "function": "scale",
+      "message": "possible division by zero: denominator may be 0"
+    },
+    {
+      "checker": "boa",
+      "status": "warning",
+      "file": "src/buf.c",
+      "line": 18,
+      "column": 12,
+      "function": "at",
+      "message": "buffer overflow: index may be out of bounds"
+    },
+    {
+      "checker": "nullity",
+      "status": "ok",
+      "file": "src/buf.c",
+      "line": 6,
+      "column": 1,
+      "message": "pointer is non-null here"
+    }
+  ]
+}

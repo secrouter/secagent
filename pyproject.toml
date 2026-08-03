@@ -1,0 +1,112 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "secagent"
+version = "0.1.0"
+description = "Containerized looping pi-agents for local (Gemma) models, built around an affordance engine for context reduction. FIPS-compatible."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Austin Probe" }]
+keywords = ["agents", "llm", "gemma", "local-models", "fips", "sphinx", "gitlab", "mcp"]
+
+# Core dependencies are intentionally lean and FIPS-friendly: no bundled crypto,
+# TLS comes from system OpenSSL via httpx/certifi. Heavy/optional integrations
+# (Sphinx, Draw.io rendering, real tokenizers) live in extras below.
+dependencies = [
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "httpx>=0.27",
+    "PyYAML>=6.0",
+    "typer>=0.12",
+    "Jinja2>=3.1",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+# UC1 docs rendering. drawio-desktop is a system binary (installed in the image),
+# not a Python package; sphinxcontrib-drawio drives it headlessly via xvfb.
+docs = [
+    "Sphinx>=7.2",
+    "sphinxcontrib-drawio>=0.0.17",
+    "myst-parser>=2.0",
+    "furo>=2024.1.29",
+]
+# UC100 webhook server.
+review = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+# Optional precise Gemma tokenizer. Falls back to a heuristic tokenizer if absent,
+# so the package works air-gapped without downloading tokenizer assets.
+tokenizer = [
+    "tokenizers>=0.15",
+]
+# Accurate C/C++ functions + the inter-file call map via the clang AST. Bundles a
+# libclang shared library. Absent => secagent falls back to regex symbols / the LLM.
+clang = [
+    "libclang>=16",
+]
+# Accurate C#/.NET functions + call map via the tree-sitter grammar (no .NET SDK and
+# no built project needed). Absent => secagent falls back to regex symbols / the LLM.
+csharp = [
+    "tree-sitter>=0.22",
+    "tree-sitter-c-sharp>=0.23",
+]
+# Accurate Rust functions + call map via the tree-sitter grammar (no Rust toolchain and
+# no built project needed). Absent => secagent falls back to regex symbols / the LLM.
+rust = [
+    "tree-sitter>=0.22",
+    "tree-sitter-rust>=0.23",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "ruff>=0.4",
+    "mypy>=1.9",
+    "types-PyYAML",
+]
+# Supply-chain tooling (CMMC-5 / NIST 800-171 CM.3.4.1, RA.3.11.2, SI.3.14.1).
+supplychain = [
+    "pip-audit>=2.7",
+    "cyclonedx-bom>=4.0",
+]
+
+[project.scripts]
+secagent = "secagent.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/secagent"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+# Fixture repos are deliberately "real-world" sample code, not secagent's own code.
+extend-exclude = ["tests/fixtures"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W", "C4", "SIM"]
+ignore = ["B008"]  # typer uses function-call defaults
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["secagent"]
+mypy_path = "src"
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+# Some third-party deps (yaml, tokenizers) ship without stubs in this environment.
+disable_error_code = ["import-untyped"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

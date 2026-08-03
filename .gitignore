@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Virtual envs
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# secagent affordance store + generated artifacts (output dirs anchored to the repo root
+# so they don't shadow same-named source paths, e.g. pi/skills/secagent-analysis/).
+.secagent/
+/secagent-docs/
+/secagent-analysis/
+/secagent-scan/
+/secagent-tests/
+/analysis-out/
+secagent.yaml
+
+# Sphinx build output
+docs/_build/
+
+# Supply-chain artifacts (generated in CI)
+sbom.json
+
+# Node (pi extension)
+node_modules/
+pi/node_modules/
+package-lock.json
+pi/package-lock.json
+
+# OS
+.DS_Store

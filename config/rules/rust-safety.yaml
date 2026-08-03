@@ -1,0 +1,139 @@
+# secagent UC4 rule set: safety & robustness heuristics for Rust.
+#
+# Rust's borrow checker already prevents the C memory-safety bugs (use-after-free, data
+# races, most buffer overruns), so this profile targets what the compiler does NOT catch:
+# panics, `unsafe` escape hatches, integer overflow/truncation, concurrency footguns, and
+# swallowed errors. HEURISTICS for an LLM reviewer, not a certified checker.
+#
+# Distilled from: the Rust API guidelines, clippy's correctness/suspicious lints, the
+# Rustonomicon (unsafe), and RustSec advisory patterns.
+#
+# Select with:  secagent scan <repo> --rules config/rules/rust-safety.yaml
+
+name: "rust-safety"
+description: >
+  Heuristic panic-safety, unsafe-code, overflow, concurrency, and error-handling rules
+  for Rust.
+
+settings:
+  languages: [Rust]           # scan only Rust files with this profile
+  min_severity: "low"
+  max_findings_per_file: 20
+  focus: [panic, unsafe, overflow, concurrency, error-handling]
+
+rules:
+  # --- Panic safety ----------------------------------------------------------
+  - id: PAN-001
+    title: Avoid unwrap()/expect() on Option/Result in non-test code
+    category: panic
+    severity: high
+    guidance: >
+      Flag `.unwrap()` / `.expect(...)` outside tests — they panic on None/Err. Prefer
+      `?`, `match`, `unwrap_or`, or an explicit error. Ignore in `#[cfg(test)]` / tests.
+    references: ["clippy::unwrap_used"]
+  - id: PAN-002
+    title: No panic!/unreachable!/todo!/unimplemented! on reachable paths
+    category: panic
+    severity: high
+    guidance: >
+      Flag `panic!`, `unreachable!`, `todo!`, `unimplemented!`, and `assert!`/`debug_assert!`
+      used for input validation on paths reachable from library/public APIs.
+    references: ["clippy::panic"]
+  - id: PAN-003
+    title: Avoid panicking indexing/slicing on untrusted lengths
+    category: panic
+    severity: medium
+    guidance: >
+      Flag `slice[i]` / `&slice[a..b]` where the index/range isn't known-in-bounds; prefer
+      `.get(i)` / `.get(a..b)`. Also flag integer division/remainder by a non-constant.
+    references: ["clippy::indexing_slicing"]
+
+  # --- Unsafe code -----------------------------------------------------------
+  - id: UNS-001
+    title: Justify every unsafe block and uphold its invariants
+    category: unsafe
+    severity: high
+    guidance: >
+      Flag `unsafe { … }` blocks/functions lacking a `// SAFETY:` comment explaining why
+      the invariants hold. Raw-pointer deref, `get_unchecked`, and unions are highest risk.
+    references: ["clippy::undocumented_unsafe_blocks"]
+  - id: UNS-002
+    title: Avoid transmute and unchecked conversions
+    category: unsafe
+    severity: high
+    guidance: >
+      Flag `std::mem::transmute`, `from_utf8_unchecked`, and pointer casts between
+      incompatible types; prefer safe conversions (`as`, `TryFrom`, `bytemuck`).
+    references: ["clippy::transmute_ptr_to_ptr"]
+  - id: UNS-004
+    title: Keep raw-pointer arithmetic within the allocation
+    category: unsafe
+    severity: high
+    guidance: >
+      Flag `ptr.add(n)` / `.offset(n)` / `.sub(n)` and `slice::from_raw_parts` where the
+      offset or length is not provably within the same allocation - a computed index, a
+      loop bound, or a length from another source. Going one element past the end is
+      undefined behaviour even without a dereference.
+    references: ["Rust reference: pointer::offset safety", "CERT ARR30-C"]
+  - id: UNS-003
+    title: Validate FFI boundaries
+    category: unsafe
+    severity: medium
+    guidance: >
+      Flag `extern "C"` calls / callbacks that pass raw pointers or assume C null-termination
+      without length/null checks on the Rust side.
+    references: ["Rustonomicon: FFI"]
+
+  # --- Integer overflow / truncation -----------------------------------------
+  - id: INT-001
+    title: Guard arithmetic that can overflow
+    category: overflow
+    severity: high
+    guidance: >
+      Flag `+`/`-`/`*` on sizes/indices/lengths that can overflow (silent wrap in release);
+      prefer `checked_*`/`saturating_*`/`wrapping_*` as appropriate.
+    references: ["clippy::arithmetic_side_effects"]
+  - id: INT-002
+    title: Avoid lossy `as` casts
+    category: overflow
+    severity: medium
+    guidance: >
+      Flag `as` casts that truncate or change signedness (e.g. `usize as u32`, `i64 as i32`);
+      prefer `TryFrom`/`try_into()` with error handling.
+    references: ["clippy::cast_possible_truncation"]
+
+  # --- Concurrency -----------------------------------------------------------
+  - id: CON-001
+    title: Handle lock poisoning; don't unwrap() a lock guard
+    category: concurrency
+    severity: medium
+    guidance: >
+      Flag `.lock().unwrap()` / `.read().unwrap()` / `.write().unwrap()` — a poisoned lock
+      then panics. Handle the PoisonError or use a non-poisoning primitive.
+    references: ["std::sync::Mutex poisoning"]
+  - id: CON-002
+    title: No blocking calls inside async code
+    category: concurrency
+    severity: high
+    guidance: >
+      Flag blocking I/O, `std::thread::sleep`, or long CPU work in an `async fn`/future;
+      it stalls the executor. Use async equivalents or `spawn_blocking`.
+    references: ["clippy::blocking_op_in_async"]
+
+  # --- Error handling --------------------------------------------------------
+  - id: ERR-001
+    title: Don't silently discard Results/errors
+    category: error-handling
+    severity: medium
+    guidance: >
+      Flag `let _ = fallible();`, a bare `.ok();`, or ignoring a `#[must_use]` result —
+      the error path is dropped. Propagate with `?` or handle it.
+    references: ["clippy::let_underscore_must_use"]
+  - id: ERR-002
+    title: Avoid unbounded resource growth
+    category: error-handling
+    severity: low
+    guidance: >
+      Flag unbounded channels (`mpsc::unbounded_channel`), collections that grow per request
+      without a cap, or missing timeouts on awaited I/O.
+    references: ["RustSec: resource exhaustion"]

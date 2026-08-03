@@ -1,0 +1,54 @@
+# Example alternate rule set: only the highest-impact memory-safety rules.
+# Select with:  scan.rules_profile: "config/rules/memory-critical.yaml"
+#
+# Demonstrates how to scope the scan — fewer rules, higher threshold, tighter caps.
+
+name: "memory-critical"
+description: >
+  Critical memory-safety rules only, for fast high-signal passes on C/C++.
+
+settings:
+  languages: [C, C++]           # scan only C/C++ files with this profile
+  min_severity: "high"          # report only high/critical findings
+  max_findings_per_file: 10
+  focus: [memory, buffer, pointer]
+
+rules:
+  - id: MEM-003
+    title: No use-after-free; null out freed pointers
+    category: memory
+    severity: critical
+    guidance: >
+      Flag any dereference or pass of a pointer after it has been free()'d/deleted.
+    references: ["CERT MEM30-C"]
+  - id: MEM-002
+    title: Check every allocation for NULL before use
+    category: memory
+    severity: high
+    guidance: Flag use of an allocator result without a non-NULL check.
+    references: ["CERT MEM52-C"]
+  - id: BUF-001
+    title: No unbounded string/IO functions
+    category: buffer
+    severity: critical
+    guidance: >
+      Flag gets/strcpy/strcat/sprintf/scanf("%s") without a length bound.
+    references: ["CERT STR31-C"]
+  - id: BUF-002
+    title: Bounds-check array/buffer indices
+    category: buffer
+    severity: high
+    guidance: Flag indices not validated against the buffer length (incl. off-by-one).
+    references: ["CERT ARR30-C"]
+  - id: PTR-001
+    title: Check pointers for NULL before dereference
+    category: pointer
+    severity: high
+    guidance: Flag dereferences of pointers not validated as non-NULL.
+    references: ["CERT EXP34-C"]
+  - id: PTR-002
+    title: Never return the address of a local/stack variable
+    category: pointer
+    severity: critical
+    guidance: Flag functions returning &local or a pointer into a stack buffer.
+    references: ["CERT DCL30-C"]
