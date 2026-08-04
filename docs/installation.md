@@ -16,6 +16,32 @@ GitLab-review webhook, a chat-ops server) see [How this differs from a SecDeploy
 install](#how-this-differs-from-a-secdeploy-service-install) below — that path is
 different from this one.
 
+## Before you start (macOS)
+
+`install.sh` never installs system packages or runs `sudo`, so on a fresh Mac you set
+up a few prerequisites first. The big one: macOS's built-in `/usr/bin/python3` is
+**3.9**, which is too old. `install.sh` looks for a newer `python3.11`/`3.12`/`3.13`
+and stops if it can't find one — it will **not** install Python for you.
+
+| prerequisite | why | one-time install |
+|---|---|---|
+| [Homebrew](https://brew.sh) | the simplest way to get the rest | see brew.sh |
+| Xcode Command Line Tools | compiler + headers some wheels build against | `xcode-select --install` |
+| **Python 3.11+** | the system `python3` (3.9) is too old | `brew install python@3.13` |
+| Node.js *(optional)* | only for **pi**, the agent runtime; secagent's own CLI works without it | `brew install node` |
+
+`uv` is installed by `install.sh` itself if you don't already have it — no need to get
+it first. On Apple Silicon everything is native `arm64`; no Rosetta.
+
+From a bare machine, that's just:
+
+```bash
+xcode-select --install            # skip if you've compiled anything before
+brew install python@3.13 node     # 'node' is optional — only pi needs it
+```
+
+Then run the install below.
+
 ## 1. Install
 
 ```bash
@@ -24,9 +50,9 @@ cd secagent
 ./install.sh
 ```
 
-(Once this repo is public, the equivalent one-liner is
+(Rather not clone first? `install.sh` never assumes it was, so the one-liner
 `curl -fsSL https://raw.githubusercontent.com/secrouter/secagent/main/install.sh | sh`
-— `install.sh` itself never assumes it was cloned first, so either form works.)
+works too.)
 
 `install.sh` is POSIX `sh`, idempotent, and never needs root. It:
 
@@ -46,8 +72,17 @@ Re-run it any time — every step is safe to repeat.
 
 ```{note}
 `SECAGENT_REF` and `PI_VERSION` at the top of `install.sh` pin exactly what gets
-installed. Override them in your environment (`SECAGENT_REF=v0.2.0 ./install.sh`) to
-install something other than the script's default.
+installed. Override them in your environment (e.g. `SECAGENT_REF=main ./install.sh` for the
+latest unreleased build) to install something other than the script's default.
+```
+
+```{tip}
+**`secagent: command not found` right after installing?** `uv tool install` puts the
+`secagent` executable in `~/.local/bin`, which may not be on a fresh Mac's `PATH`. uv
+prints the exact fix when that happens: run `uv tool update-shell` (or add
+`~/.local/bin` to your `PATH`) and open a new terminal. `install.sh` adds it for the
+rest of its own run — so its final `secagent version` check still passes — but your
+interactive shell needs it added once.
 ```
 
 ## 2. Point secagent (and pi) at your SecRouter deployment
