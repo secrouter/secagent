@@ -98,11 +98,30 @@ def index_repo(
     *,
     refresh: bool = False,
     llm: LLMClient | None = None,
+    llm_scope: set[str] | None = None,
 ) -> dict[str, Any]:
     """Build or update the affordance store for ``path``.
 
     Incremental: unchanged files (by SHA-256) keep their existing artifacts. Returns
     a JSON-serializable report.
+
+    ``llm_scope``, when given, is a set of repo-relative paths (as produced by
+    `..languages.rel_posix`) OUTSIDE of which the LLM is never called for a file's
+    purpose summary — every file is still walked and structurally indexed (symbols,
+    language, size, the project/IO/call maps), only the *expensive* per-file model
+    call is confined to the set. This is how a git-delta-scoped `docs build` keeps
+    the whole-repo index (and the site it renders) complete while spending model
+    budget only on the files that changed; see `agents/docs/agent.py`'s
+    `build_docs(scope=...)`. ``None`` (the default) means no restriction at all —
+    every eligible file may use the LLM, exactly as before this parameter existed.
+    A file outside ``llm_scope`` whose content is unchanged is skipped exactly like
+    today (its cached summary is reused); one whose content changed (typically only
+    on a first-ever index, since a delta by construction covers every content change
+    on the current branch) is still re-indexed structurally, with a heuristic
+    summary. ``refresh``/``settings.affordances.refresh_summaries`` — "regenerate
+    even if cached" — apply only to files inside ``llm_scope``: forcing a
+    re-evaluation of the model must not spend that same budget on files a scoped run
+    deliberately excluded.
     """
     root = Path(path).resolve()
     if not root.is_dir():
@@ -123,6 +142,13 @@ def index_repo(
 
     updated = skipped = 0
     seen: set[str] = set()
+    # Only populated (and only reported) when `llm_scope` is not None — see the
+    # `report` assembly below. Tracked by the SUMMARY's own `source`, not by whether
+    # the LLM was merely offered: `cfg.llm_summaries=False` (`--no-llm`) or a failed
+    # call both leave `source == "heuristic"` even for an in-scope file, and this
+    # list must answer "did this file's purpose actually come from the model this
+    # run", not "was it eligible to".
+    llm_refreshed: list[str] = []
     log.info("Indexing %s%s", root, "" if cfg.llm_summaries else " (heuristic, no LLM)")
     sd = Path(cfg.store_dir)
     store_dir = sd if sd.is_absolute() else root / sd
@@ -139,17 +165,21 @@ def index_repo(
                 rel = rel_posix(fpath, root)
                 seen.add(rel)
                 sha = file_hash(fpath)
+                in_llm_scope = llm_scope is None or rel in llm_scope
                 # --refresh-summaries must also bypass the incremental skip. The skip
                 # short-circuits before _process_file, which is the ONLY place
                 # refresh_summaries has any effect — so on an already-indexed repo the
                 # flag documented to "regenerate LLM summaries even if cached" silently
-                # did nothing at all.
-                if (not refresh and not cfg.refresh_summaries
-                        and store.existing_sha(rel) == sha):
+                # did nothing at all. But a refresh request must not itself widen a
+                # scoped run's LLM budget: it only applies within `llm_scope`, so a file
+                # this run deliberately excluded stays excluded even with --refresh.
+                force_refresh = (refresh or cfg.refresh_summaries) and in_llm_scope
+                if not force_refresh and store.existing_sha(rel) == sha:
                     skipped += 1
                 else:
+                    file_llm = llm if in_llm_scope else None
                     rec, summary, symbols, types = _process_file(
-                        rel, fpath, sha, cfg, store, llm)
+                        rel, fpath, sha, cfg, store, file_llm)
                     store.upsert_file(rec, summary, symbols)
                     # File-scoped, not `set_types` — see `replace_types_for_files`'s
                     # docstring: this must not wipe a heavy backend's rows for every
@@ -164,6 +194,8 @@ def index_repo(
                     # concurrent secagent process gets "database is locked".
                     store.commit()
                     updated += 1
+                    if summary.source == "llm":
+                        llm_refreshed.append(rel)
                 if i % step == 0 or i == total:
                     log.info("  %d/%d files (%d summarized, %d cached)",
                              i, total, updated, skipped)
@@ -234,6 +266,13 @@ def index_repo(
                 "entrypoints": pm.entrypoints,
                 "store_dir": str(store.store_dir),
             }
+            # Only present when a caller actually asked for LLM scoping — an
+            # unscoped index (every existing caller: `secagent index`, `scan`,
+            # `testgen`, and an unscoped `docs build`) must get the exact same
+            # report shape it always has.
+            if llm_scope is not None:
+                report["llm_scope_requested"] = sorted(llm_scope)
+                report["llm_refreshed"] = sorted(llm_refreshed)
             get_audit_logger(settings).record(
                 "index",
                 target={"repo": str(root), "files_indexed": len(records),

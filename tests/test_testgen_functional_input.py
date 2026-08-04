@@ -86,7 +86,7 @@ def test_a_component_with_no_input_is_recorded_failed_not_generated(tmp_path):
     s = _settings(tmp_path)
     store = _components(repo, s)
     try:
-        results, _skipped, _used = _gen_functional(
+        results, _skipped, _used, _whole = _gen_functional(
             repo, tmp_path / "out", store, {}, s.testgen, _inventing_llm(), {})
     finally:
         store.close()
@@ -109,7 +109,7 @@ def test_ok_is_never_true_on_a_zero_length_input(tmp_path):
     s = _settings(tmp_path)
     store = _components(repo, s)
     try:
-        results, _skipped, _used = _gen_functional(
+        results, _skipped, _used, _whole = _gen_functional(
             repo, tmp_path / "out", store, {}, s.testgen, _inventing_llm(), {})
     finally:
         store.close()

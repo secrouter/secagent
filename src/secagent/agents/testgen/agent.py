@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from ... import gitscope
 from ...affordances import queries
 from ...affordances.call_map import is_test_path
 from ...affordances.io_map import summarize_io
@@ -45,6 +46,7 @@ def generate_tests(
     functional: bool | None = None,
     llm: LLMClient | None = None,
     verify: bool = False,
+    scope: gitscope.ChangeSet | None = None,
 ) -> dict[str, Any]:
     """Generate unit and functional tests from the UC1 affordance store.
 
@@ -53,6 +55,17 @@ def generate_tests(
     deliberately broken code. Anything judged `vacuous` or `wrong` is moved to
     ``quarantine/`` — kept, because deleting it destroys the evidence, but somewhere its
     path alone says it is not a test.
+
+    ``scope`` (a `gitscope.ChangeSet`) is what the CLI's default git-delta scoping —
+    and its ``--base``/``--since``/``--staged``/``--working-tree``/``--path`` flags —
+    resolves to (see ``cli.py``'s ``testgen`` command and `gitscope.resolve_scope`),
+    mirroring `agents/scan/agent.py`'s `scan_repo(scope=...)`. WHERE tests are written
+    is unaffected by scoping — always the same side tree (``out_dir``/``secagent-tests``)
+    — and so is the whole-repo affordance store this run reads for grounding (summaries,
+    IO map). What ``scope`` narrows is WHICH targets get a fresh generated test this run:
+    the unit pass is restricted to files in the delta, and the functional pass to
+    components that own at least one file in the delta. The run is then unconditionally
+    reported as partial: see ``result["scope"]`` below.
     """
     repo = Path(repo).resolve()
     enforce_fips_policy(settings.fips.require_fips, settings.fips.allow_non_fips)
@@ -64,6 +77,27 @@ def generate_tests(
     out = Path(out_dir).resolve() if out_dir else (repo / cfg.out_dir)
     (out / "unit").mkdir(parents=True, exist_ok=True)
     (out / "functional").mkdir(parents=True, exist_ok=True)
+
+    scope_block: dict[str, Any] | None = None
+    scope_paths: set[str] | None = None
+    if scope is not None:
+        # Generic (VCS/ignore-glob/binary) filter only — unlike `scan`, testgen has no
+        # language restriction: any changed file can own a unit test or a functional
+        # component.
+        in_scope, dropped = gitscope.analyzable(scope, settings)
+        scope_paths = set(in_scope)
+        scope_block = scope.summary_dict()
+        # `summary_dict()`'s own `total_analyzable` is a SINGLE-domain field (built for
+        # `scan`, which has one) and would sit here as an always-null, easy-to-misread
+        # placeholder — testgen has two (`unit_files_total_analyzable`/
+        # `functional_components_total_analyzable`, filled in below once each pass has
+        # run), so the single generic field is dropped rather than left null.
+        del scope_block["total_analyzable"]
+        scope_block["dropped_non_analyzable"] = dropped
+        scope_block["partial"] = True
+        banner = gitscope.coverage_banner(
+            scope, in_scope=len(scope_paths), dropped=dropped)
+        log.warning("testgen: %s", banner)
 
     owns_llm = False
     if llm is None:
@@ -77,8 +111,10 @@ def generate_tests(
     recommendations: list[str] = [_UC1_RECOMMENDATION]
     unit_results: list[GeneratedTest] = []
     unit_skipped: list[str] = []
+    unit_whole_repo_eligible = 0
     func_results: list[GeneratedTest] = []
     func_skipped: list[str] = []
+    func_whole_repo_eligible = 0
     # Detection reads the repo tree once per language, not once per file — populated
     # (serially, before any threading) by `_gen_unit`/`_gen_functional` on first use of
     # each language and shared between both passes.
@@ -99,13 +135,15 @@ def generate_tests(
                     "model endpoint will materially improve generated tests."
                 )
             if do_unit:
-                unit_results, unit_skipped, unit_used_summary = _gen_unit(
-                    repo, out, store, summaries, cfg, llm, framework_cache)
+                unit_results, unit_skipped, unit_used_summary, unit_whole_repo_eligible = (
+                    _gen_unit(repo, out, store, summaries, cfg, llm, framework_cache,
+                             scope_paths=scope_paths))
                 generated += unit_results
                 used_llm_summary = used_llm_summary or unit_used_summary
             if do_functional:
-                func_results, func_skipped, func_used_summary = _gen_functional(
-                    repo, out, store, summaries, cfg, llm, framework_cache)
+                func_results, func_skipped, func_used_summary, func_whole_repo_eligible = (
+                    _gen_functional(repo, out, store, summaries, cfg, llm, framework_cache,
+                                    scope_paths=scope_paths))
                 generated += func_results
                 used_llm_summary = used_llm_summary or func_used_summary
             if used_llm_summary:
@@ -115,6 +153,22 @@ def generate_tests(
     finally:
         if owns_llm and llm is not None:
             llm.close()
+
+    if scope_block is not None:
+        # Per-domain "N of M": the scoped-and-eligible count this run actually drew
+        # targets from (results + the cap's own skipped tail) against the whole
+        # repository's population — the same "N of M" split `scan` reports via
+        # `coverage.files.eligible` (scoped) alongside `scope.total_analyzable`
+        # (whole-repo), kept as two numbers for the same reason: collapsing them
+        # would either hide how much of the repo was never a candidate, or make a
+        # small delta look like a small repository.
+        if do_unit:
+            scope_block["unit_files_in_scope"] = len(unit_results) + len(unit_skipped)
+            scope_block["unit_files_total_analyzable"] = unit_whole_repo_eligible
+        if do_functional:
+            scope_block["functional_components_in_scope"] = (
+                len(func_results) + len(func_skipped))
+            scope_block["functional_components_total_analyzable"] = func_whole_repo_eligible
 
     verification: list[dict[str, Any]] = []
     if verify:
@@ -189,7 +243,7 @@ def generate_tests(
         provenance = None
 
     _write_manifest(out, repo, generated, recommendations, settings.marking.banner,
-                    domains if coverage_ok else None, provenance)
+                    domains if coverage_ok else None, provenance, scope_block)
 
     get_audit_logger(settings).record(
         "testgen",
@@ -229,6 +283,8 @@ def generate_tests(
         # Unlike coverage's `why`, `provenance` is five small keys — no
         # context-flooding reason to withhold it from stdout.
         result["provenance"] = provenance.to_dict()
+    if scope_block is not None:
+        result["scope"] = scope_block
     return result
 
 
@@ -244,9 +300,10 @@ def _framework_for(
 
 
 def _gen_unit(
-    repo, out, store, summaries, cfg, llm, framework_cache
-) -> tuple[list[GeneratedTest], list[str], bool]:
-    """Returns ``(results, skipped_paths, used_llm_summary)``.
+    repo, out, store, summaries, cfg, llm, framework_cache,
+    *, scope_paths: set[str] | None = None,
+) -> tuple[list[GeneratedTest], list[str], bool, int]:
+    """Returns ``(results, skipped_paths, used_llm_summary, whole_repo_eligible)``.
 
     ``skipped_paths`` is the tail of the ranked, eligible candidate list cut off by
     ``max_unit_files`` — returned here, alongside the results, rather than
@@ -258,6 +315,14 @@ def _gen_unit(
     the target's read succeeded — a summary is never fetched for a target that
     failed to read) was LLM-sourced. `Provenance.model` in `generate_tests` only
     names the index-time summary model when this is true.
+
+    ``scope_paths``, when given, restricts candidates to files in the git delta — a
+    scoped `generate_tests` run generates unit tests only for what changed, though
+    ``store`` (and therefore ``summaries``) still covers the whole repository, so a
+    delta file's prompt is unaffected by scoping. ``whole_repo_eligible`` is the
+    candidate count BEFORE that restriction (the population a full/``--all`` run
+    would have drawn from), so a caller can report "N of the whole repo's M" rather
+    than just N.
     """
     results: list[GeneratedTest] = []
     used_llm_summary = False
@@ -276,6 +341,9 @@ def _gen_unit(
     # itself was never reached. Same shape as the analysis triage budget going to
     # vendored headers: alphabetical order is not a priority order.
     code_files.sort(key=lambda r: path_rank(r.path))
+    whole_repo_eligible = len(code_files)
+    if scope_paths is not None:
+        code_files = [r for r in code_files if r.path in scope_paths]
 
     def _one(rec) -> GeneratedTest:
         nonlocal used_llm_summary
@@ -343,19 +411,31 @@ def _gen_unit(
             log.info("testgen: [%d/%d] %s — %s", done, total_n, rec.path,
                      "written" if gen.ok else "no usable output")
             results.append(gen)
-    return results, skipped, used_llm_summary
+    return results, skipped, used_llm_summary, whole_repo_eligible
 
 
 def _gen_functional(
-    repo, out, store, summaries, cfg, llm, framework_cache
-) -> tuple[list[GeneratedTest], list[str], bool]:
-    """Returns ``(results, skipped_components, used_llm_summary)`` — see `_gen_unit`
-    for why the skipped population travels with the results instead of being
-    recomputed, and for what ``used_llm_summary`` means."""
+    repo, out, store, summaries, cfg, llm, framework_cache,
+    *, scope_paths: set[str] | None = None,
+) -> tuple[list[GeneratedTest], list[str], bool, int]:
+    """Returns ``(results, skipped_components, used_llm_summary, whole_repo_eligible)``
+    — see `_gen_unit` for why the skipped population travels with the results instead
+    of being recomputed, for what ``used_llm_summary`` means, and for
+    ``whole_repo_eligible``.
+
+    ``scope_paths``, when given, restricts candidates to components that own at
+    least one file in the git delta — "this component was touched by the change",
+    not "every file in it changed". A component with no files at all (should not
+    happen, but `Component.files` is not guaranteed non-empty by construction) owns
+    no delta file either way and is correctly excluded.
+    """
     results: list[GeneratedTest] = []
     used_llm_summary = False
     components = [c for c in store.load_components() if is_code(c.language)]
     edges = store.load_io_edges()
+    whole_repo_eligible = len(components)
+    if scope_paths is not None:
+        components = [c for c in components if set(c.files) & scope_paths]
     targets = components[: cfg.max_functional_components]
     skipped = [c.name for c in components[cfg.max_functional_components :]]
     for comp in targets:
@@ -413,7 +493,7 @@ def _gen_functional(
                                      rel_out.as_posix(), ok,
                                      saw_chars=context_chars, total_chars=context_chars,
                                      error=error, framework_assumed=not detected))
-    return results, skipped, used_llm_summary
+    return results, skipped, used_llm_summary, whole_repo_eligible
 
 
 def _framework_rules(framework: str) -> str:
@@ -629,6 +709,7 @@ def _domain_coverage(
 def _write_manifest(
     out: Path, repo: Path, generated, recommendations, banner: str,
     domains: dict[str, Coverage] | None, provenance: Provenance | None,
+    scope: dict[str, Any] | None = None,
 ) -> None:
     manifest: dict[str, Any] = {
         "repo": str(repo),
@@ -639,6 +720,13 @@ def _write_manifest(
         manifest["coverage"] = coverage_to_dict(domains)
     if provenance is not None:
         manifest["provenance"] = provenance.to_dict()
+    if scope is not None:
+        # The same structured honesty block `scan.json` carries, so a reader of the
+        # manifest alone — not just the console banner, which scrolls away — can tell
+        # this suite covers only the git delta, not the whole project. Omitted
+        # entirely for an unscoped (``--all``) run, matching that run's original,
+        # byte-for-byte shape.
+        manifest["scope"] = scope
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     lines = []
@@ -651,6 +739,35 @@ def _write_manifest(
         "structure and IO map. **They are drafts — review and adjust before relying on "
         "them.** They live here, separate from the project's own test suite.",
         "",
+    ]
+    if scope is not None:
+        # Placed first, right after the intro: every other section below describes
+        # what THIS run covers, and that set may already be a small slice of the
+        # project — the same "frame how to read the rest" placement `scan.md` uses
+        # for its own scoped-run admonition.
+        lines += [
+            "## ⚠️ Scoped run — only the git delta was targeted",
+            "",
+            f"Scope: `{scope.get('kind')}`, base `{scope.get('base_ref')}` @ "
+            f"`{str(scope.get('base_sha') or '')[:8]}`. This suite covers only "
+            "files/components touched by that delta — **not the whole project.** "
+            "Files outside it have no generated test here, whether or not they "
+            "already had one from a previous run. Run with `--all` for whole-repo "
+            "generation. See `scope` in `manifest.json`.",
+            "",
+        ]
+        if "unit_files_in_scope" in scope:
+            lines.append(
+                f"- Unit: {scope['unit_files_in_scope']} of "
+                f"{scope['unit_files_total_analyzable']} eligible file(s) in the "
+                "repository were in scope.")
+        if "functional_components_in_scope" in scope:
+            lines.append(
+                f"- Functional: {scope['functional_components_in_scope']} of "
+                f"{scope['functional_components_total_analyzable']} eligible "
+                "component(s) in the repository were in scope.")
+        lines.append("")
+    lines += [
         "## Recommended first",
         "",
     ]

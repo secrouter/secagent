@@ -67,23 +67,45 @@ counts); those are hash-keyed, so not attributable to a file/function.
 
 ```text
 secagent docs build <repo> [-o OUT] [--no-build] [--no-llm] [--refresh-summaries] [-v]
+                    [--base REF | --since REF | --staged | --working-tree | --path P... | --all]
 ```
 
 `--no-build` writes the Sphinx sources + `.drawio` files but skips `sphinx-build`.
 `--no-llm` uses heuristic prose (no endpoint needed). `--refresh-summaries` forces
-regeneration of the LLM summaries. `-v/--verbose` streams the build phases
-(index → diagrams → function descriptions → render → Sphinx) to stderr. Each build also
-writes `summaries.json` and `summaries.md` (the per-model manifest) into the output dir.
+regeneration of the LLM summaries, within scope (see below). `-v/--verbose` streams the
+build phases (index → diagrams → function descriptions → render → Sphinx) to stderr.
+Each build also writes `summaries.json` and `summaries.md` (the per-model manifest)
+into the output dir.
+
+**Scoped by default.** With none of the scope flags given, the rendered site is still
+COMPLETE — every file gets a page — but only files in the git delta since your
+branch's base spend LLM budget on a fresh purpose summary / function description;
+every other file reuses its existing summary from the affordance store. Pass `--all`
+for the original whole-repository (re)summarization. Exactly one of
+`--base`/`--since`/`--staged`/`--working-tree`/`--path`/`--all` may be given at a
+time. A scoped build prints a coverage banner (stderr) and carries a structured
+`scope` block in `summaries.json` marking itself `partial`, naming how many files
+were refreshed against the whole repository's total. Full details: {doc}`git-scope`.
 
 ## `secagent testgen`
 
 ```text
-secagent testgen <repo> [-o OUT] [--no-unit] [--no-functional]
+secagent testgen <repo> [-o OUT] [--no-unit] [--no-functional] [--verify]
+                 [--base REF | --since REF | --staged | --working-tree | --path P... | --all]
 ```
 
 UC5: generate unit + functional component I/O tests into a separate folder (default
 `<repo>/secagent-tests/`). Run UC1 (`secagent docs build`) first for best results. See
 {doc}`use-cases`.
+
+**Scoped by default.** With none of the scope flags given, the unit pass targets only
+files in the git delta since your branch's base, and the functional pass targets only
+components that own at least one such file — the whole-repo affordance index is still
+read for grounding, and tests still land in the same side tree. Pass `--all` for the
+original whole-repository generation. Exactly one of
+`--base`/`--since`/`--staged`/`--working-tree`/`--path`/`--all` may be given at a
+time. A scoped run prints a coverage banner (stderr) and carries a structured `scope`
+block in `manifest.json` marking itself `partial`. Full details: {doc}`git-scope`.
 
 ## `secagent scan`
 

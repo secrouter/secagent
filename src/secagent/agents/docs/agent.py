@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from ... import gitscope
 from ...affordances.api import index_repo
 from ...affordances.file_summary import describe_functions
 from ...affordances.priority import path_rank
@@ -31,12 +32,26 @@ def build_docs(
     *,
     run_sphinx: bool = True,
     reindex: bool = True,
+    scope: gitscope.ChangeSet | None = None,
 ) -> dict[str, Any]:
     """Generate a comprehensive Sphinx doc set with architecture diagrams.
 
     Returns a JSON-serializable report. The diagram backend (``diagrams.renderer``)
     defaults to ``svg`` (no external binary) and faithful backends fall back to it,
     so diagrams are always produced; a failing Sphinx build is reported, not raised.
+
+    ``scope`` (a `gitscope.ChangeSet`) is what the CLI's default git-delta scoping —
+    and its ``--base``/``--since``/``--staged``/``--working-tree``/``--path`` flags —
+    resolves to (see ``cli.py``'s ``docs build`` command and `gitscope.resolve_scope`),
+    mirroring `agents/scan/agent.py`'s `scan_repo(scope=...)`. Unlike `scan`, docs has
+    no per-file model call to skip outright: the WHOLE repository is still indexed
+    (structure, symbols, the IO/call maps) and the rendered site still has a page for
+    every file, exactly as an unscoped build does. What ``scope`` narrows is which
+    files' PURPOSE SUMMARY / function descriptions are worth a fresh model call this
+    run — files outside the delta reuse whatever summary is already in the affordance
+    store (from a previous full or scoped build), so a scoped build's LLM spend is
+    proportional to the size of the change, not the size of the repository. The run
+    is then unconditionally reported as partial: see ``report["scope"]`` below.
     """
     repo = Path(repo).resolve()
     out_dir = Path(out_dir).resolve()
@@ -52,15 +67,43 @@ def build_docs(
 
     report: dict[str, Any] = {"repo": str(repo), "out_dir": str(out_dir)}
 
+    scope_block: dict[str, Any] | None = None
+    llm_scope_paths: set[str] | None = None
+    if scope is not None:
+        # Generic (VCS/ignore-glob/binary) filter only — unlike `scan`, docs has no
+        # language restriction: any changed file's purpose is worth refreshing.
+        in_scope, dropped = gitscope.analyzable(scope, settings)
+        llm_scope_paths = set(in_scope)
+        scope_block = scope.summary_dict()
+        scope_block["in_scope_files"] = len(in_scope)
+        scope_block["dropped_non_analyzable"] = dropped
+        scope_block["partial"] = True
+        banner = gitscope.coverage_banner(
+            scope, in_scope=len(in_scope), dropped=dropped)
+        log.warning("docs build: %s", banner)
+
     llm: LLMClient | None = None
     if settings.affordances.llm_summaries:
         llm = LLMClient(settings.llm)
     try:
         if reindex:
-            report["index"] = index_repo(repo, settings, llm=llm)
+            report["index"] = index_repo(repo, settings, llm=llm, llm_scope=llm_scope_paths)
 
         store = AffordanceStore(repo, settings.affordances.store_dir)
         try:
+            if scope_block is not None:
+                # The whole-repo count a full (`--all`) build would have (re)summarized
+                # — every file the index tracks, mirroring `scan`'s own "N of M" framing
+                # (`total_analyzable` there is the ruleset-language whole-repo count;
+                # here, every indexed file is a purpose-summarization candidate). Set
+                # AFTER indexing so it reflects this run's store, not a stale one.
+                scope_block["total_analyzable"] = len(store.file_records())
+                index_report = report.get("index") or {}
+                refreshed = index_report.get("llm_refreshed", [])
+                scope_block["refreshed"] = len(refreshed)
+                scope_block["reused"] = scope_block["total_analyzable"] - len(refreshed)
+                report["scope"] = scope_block
+
             components = store.load_components()
             edges = store.load_io_edges()
             from ...affordances.call_map import inter_file
@@ -95,6 +138,7 @@ def build_docs(
                 described, total_fns = _describe_functions(
                     repo, store, llm, cap,
                     refresh=settings.affordances.refresh_summaries,
+                    scope_paths=llm_scope_paths,
                 )
                 report["function_docs"] = described
                 if cap >= 0 and total_fns > described:
@@ -120,7 +164,8 @@ def build_docs(
                 banner=settings.marking.banner,
             )
             # Per-model record of the generated summaries, for evaluating models.
-            report["summaries_manifest"] = _write_summaries_manifest(out_dir, store)
+            report["summaries_manifest"] = _write_summaries_manifest(
+                out_dir, store, scope_block)
         finally:
             store.close()
 
@@ -148,17 +193,27 @@ def build_docs(
 
 
 def _describe_functions(repo, store: AffordanceStore, llm: LLMClient, max_docs: int,
-                        refresh: bool = False) -> tuple[int, int]:
+                        refresh: bool = False,
+                        scope_paths: set[str] | None = None) -> tuple[int, int]:
     """Generate + persist one-line LLM descriptions for functions (real source first).
 
     ``max_docs`` caps the number described; ``-1`` means describe every function.
     Returns ``(described, total_candidate_functions)`` so the caller can flag (and the
     docs can note) when the cap truncated coverage.
+
+    ``scope_paths``, when given, restricts candidates to files in the git delta —
+    the same restriction `build_docs` applies to `index_repo`'s file-purpose pass, so
+    a scoped run's per-function model spend is proportional to the change, not the
+    repository. Functions in files outside it keep whatever description (if any) is
+    already in the store from a previous run; ``None`` means every function with
+    symbols is a candidate, as before this parameter existed.
     """
     from ...affordances.call_map import is_test_path
 
     repo = Path(repo)
     recs = [r for r in store.file_records() if r.n_symbols and not is_test_path(r.path)]
+    if scope_paths is not None:
+        recs = [r for r in recs if r.path in scope_paths]
     # Candidate functions per file (symbols only here; source text is read lazily below).
     candidates: list[tuple] = []
     total_fns = 0
@@ -208,16 +263,41 @@ def _describe_functions(repo, store: AffordanceStore, llm: LLMClient, max_docs: 
     return described, total_fns
 
 
-def _write_summaries_manifest(out_dir: Path, store: AffordanceStore) -> dict[str, str]:
-    """Write the per-model summaries manifest (JSON + Markdown) for model evaluation."""
+def _write_summaries_manifest(
+    out_dir: Path, store: AffordanceStore, scope: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Write the per-model summaries manifest (JSON + Markdown) for model evaluation.
+
+    ``scope``, when given (a scoped `build_docs` run), is embedded under a ``scope``
+    key in ``summaries.json`` — the same structured honesty block `scan.json` carries
+    — so a reader of the manifest alone (not just the console banner) can tell this
+    run only refreshed a fraction of the file purposes/descriptions listed below; the
+    rest were carried over from a previous run. Omitted entirely for an unscoped
+    (``--all``) build, matching that build's original, byte-for-byte shape.
+    """
     from ...affordances import queries
 
     manifest = queries.summaries_manifest(store)
+    if scope is not None:
+        manifest["scope"] = scope
     (out_dir / "summaries.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8")
 
     model = manifest["model"] or "(heuristic — no model)"
-    lines = [f"# Generated summaries — model: {model}", "", "## File purposes", ""]
+    lines = [f"# Generated summaries — model: {model}", ""]
+    if scope is not None:
+        lines += [
+            "> **SCOPED RUN — only the git delta's file purposes/descriptions were "
+            f"refreshed** (`{scope.get('kind')}`, base `{scope.get('base_ref')}` @ "
+            f"`{str(scope.get('base_sha') or '')[:8]}`).",
+            f"> {scope.get('refreshed', 0)} of {scope.get('total_analyzable', 0)} "
+            "file(s) were refreshed this run; the rest below are REUSED from a "
+            "previous build's cached summary. The site is still complete — every "
+            "file is listed — this is a PARTIAL refresh, not a partial site. Pass "
+            "`--all` to refresh every file. See `scope` in `summaries.json`.",
+            "",
+        ]
+    lines += ["## File purposes", ""]
     for path, purpose in manifest["files"].items():
         lines.append(f"- `{path}` — {purpose}")
     lines += ["", "## Function descriptions", ""]

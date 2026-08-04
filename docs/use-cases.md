@@ -58,6 +58,20 @@ Pipeline:
 Run via pi for an interactive, exploratory deep-dive (the model calls the affordance
 tools to stay context-frugal), or as the one-shot command above.
 
+```{important}
+**Scoped by default.** `secagent docs build` used to mean "(re)summarize every file
+with the model"; it now means "refresh only the files in the delta since your
+branch's base" — pass `--all` for the old, whole-repository behavior. The rendered
+site is unaffected either way: it always has a page for every file. Only the
+*freshness* of each file's one-line purpose / function descriptions is scoped — a
+file outside the delta reuses its existing summary from a previous build rather than
+spending a fresh model call. A scoped build prints a coverage banner and marks
+itself `partial` in `summaries.json`, naming how many files were refreshed against
+the whole repository's total. See {doc}`git-scope` for the full flag set
+(`--base`/`--since`/`--staged`/`--working-tree`), the incremental-refresh model in
+detail, and what the coverage banner/JSON block look like.
+```
+
 ## UC3 — C/C++ static analysis (IKOS)
 
 ### Measured signal quality — read this first
@@ -467,7 +481,8 @@ Walks the project (via the UC1 affordance store) and drafts tests at two levels:
 
 ```bash
 secagent docs build path/to/repo          # UC1 first (recommended) — richer context
-secagent testgen path/to/repo             # -> path/to/repo/secagent-tests/
+secagent testgen path/to/repo             # DEFAULT: just the delta vs your base branch
+secagent testgen path/to/repo --all       # the whole project
 secagent testgen path/to/repo -o ./gen-tests --no-functional
 ```
 
@@ -491,6 +506,19 @@ untrusted (CMMC-7); the README/manifest carry the CUI marking when set.
 model-backed index it still produces drafts but recommends running
 `secagent docs build` first. Generated tests are **drafts** — review them (and expect
 C/C++ ones to need a build harness) before adding to CI.
+```
+
+```{important}
+**Scoped by default.** `secagent testgen` used to mean "generate for the whole
+project"; it now means "generate for the delta since your branch's base" — pass
+`--all` for the old, whole-repository behavior. Tests still land in the same side
+tree either way (`secagent-tests/`, or `-o`); only WHICH files (unit pass) and
+components (functional pass — any component owning at least one delta file) get a
+fresh test is scoped. The whole-repo affordance index is still read for grounding on
+every generated test, scoped or not. A scoped run prints a coverage banner and marks
+itself `partial` in `manifest.json`, naming how many files/components were targeted
+against the whole repository's total. See {doc}`git-scope` for the full flag set,
+the exact per-pass semantics, and what the coverage banner/JSON block look like.
 ```
 
 ### Verifying tests, generated or hand-written

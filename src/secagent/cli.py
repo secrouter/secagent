@@ -672,22 +672,64 @@ def docs_build(
     no_llm: bool = typer.Option(False, "--no-llm", help="Heuristic prose, no LLM endpoint"),
     refresh_summaries: bool = typer.Option(
         False, "--refresh-summaries",
-        help="Regenerate LLM summaries/descriptions even if cached (re-evaluation)",
+        help="Regenerate LLM summaries/descriptions even if cached (re-evaluation); "
+             "within scope only — see --all below.",
     ),
+    paths: list[str] | None = typer.Option(
+        None, "--path",
+        help="Refresh summaries only for these repo-relative files (repeatable) — a "
+             "scope source, see --all."),
+    base: str | None = typer.Option(
+        None, "--base",
+        help="Scope source (default): the delta since this base branch/ref forked from "
+             "HEAD (default: auto-detect main/master/the remote default)."),
+    since: str | None = typer.Option(
+        None, "--since",
+        help="Scope source: the delta since this ref (merge-base with HEAD) — like "
+             "--base, but no auto-detect fallback."),
+    staged: bool = typer.Option(
+        False, "--staged", help="Scope source: only staged (git add'ed) changes."),
+    working_tree: bool = typer.Option(
+        False, "--working-tree",
+        help="Scope source: only uncommitted changes vs HEAD (skips anything already "
+             "committed on this branch)."),
+    all_repo: bool = typer.Option(
+        False, "--all",
+        help="Scope source: refresh summaries for the WHOLE repository — secagent's "
+             "original behavior — instead of scoping to a git delta."),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show progress on stderr"),
 ) -> None:
-    """Generate comprehensive Sphinx documentation with Draw.io diagrams."""
+    """Generate comprehensive Sphinx documentation with Draw.io diagrams.
+
+    The rendered site is always COMPLETE — every file in the repository gets a page,
+    regardless of scope. By default, only files in the git delta since the current
+    branch's base spend LLM budget on a fresh purpose summary / function description;
+    every other file reuses its existing summary from the affordance store (from a
+    previous build). A coverage banner names the scope and how many files were
+    refreshed, on stderr and in ``summaries.json``. Pass --all to refresh the whole
+    repository instead (the original behavior). --base/--since/--staged/
+    --working-tree/--path/--all are mutually exclusive; see ``docs/git-scope.md``.
+    """
     if verbose:
         from .progress import enable_verbose
 
         enable_verbose()
     from .agents.docs.agent import build_docs
+    from .gitscope import GitScopeError, resolve_scope
 
     settings = _settings(config)
     if no_llm:
         settings.affordances.llm_summaries = False
     settings.affordances.refresh_summaries = refresh_summaries
-    result = build_docs(path, out, settings, run_sphinx=not no_build)
+    try:
+        scope = resolve_scope(
+            path, base=base, since=since, staged_only=staged, working_tree_only=working_tree,
+            paths=list(paths) if paths else None, all_files=all_repo,
+        )
+    except GitScopeError as exc:
+        console.print(f"[red]secagent docs build: {exc}[/red]")
+        raise typer.Exit(code=1) from None
+    result = build_docs(path, out, settings, run_sphinx=not no_build, scope=scope)
     console.print_json(json.dumps(result))
 
 
@@ -704,6 +746,28 @@ def testgen(
         False, "--verify",
         help="Gate each written test: compiles, passes, and FAILS on broken code. "
              "Vacuous/wrong tests are moved to quarantine/."),
+    paths: list[str] | None = typer.Option(
+        None, "--path",
+        help="Generate tests only for these repo-relative files (repeatable) — a "
+             "scope source, see --all."),
+    base: str | None = typer.Option(
+        None, "--base",
+        help="Scope source (default): the delta since this base branch/ref forked from "
+             "HEAD (default: auto-detect main/master/the remote default)."),
+    since: str | None = typer.Option(
+        None, "--since",
+        help="Scope source: the delta since this ref (merge-base with HEAD) — like "
+             "--base, but no auto-detect fallback."),
+    staged: bool = typer.Option(
+        False, "--staged", help="Scope source: only staged (git add'ed) changes."),
+    working_tree: bool = typer.Option(
+        False, "--working-tree",
+        help="Scope source: only uncommitted changes vs HEAD (skips anything already "
+             "committed on this branch)."),
+    all_repo: bool = typer.Option(
+        False, "--all",
+        help="Scope source: generate tests for the WHOLE repository — secagent's "
+             "original behavior — instead of scoping to a git delta."),
 ) -> None:
     """UC5: generate unit + functional tests into a separate folder.
 
@@ -712,13 +776,30 @@ def testgen(
     `--verify` runs the mechanical gates over the result. Without it, `ok: true` means
     only that the model emitted text — measured on one real C++ file, 3 of 10 such tests
     failed against correct code and 3 more asserted nothing at all.
+
+    By default, tests are generated only for files (unit pass) and components
+    (functional pass) touched by the git delta since the current branch's base — the
+    whole-repo affordance index is still read for grounding, and tests still land in
+    the same side tree (``--out``/``secagent-tests``). A coverage banner names the
+    scope, on stderr and in ``manifest.json``. Pass --all for the original whole-repo
+    generation. --base/--since/--staged/--working-tree/--path/--all are mutually
+    exclusive; see ``docs/git-scope.md``.
     """
     from .agents.testgen.agent import generate_tests
+    from .gitscope import GitScopeError, resolve_scope
 
     settings = _settings(config)
+    try:
+        scope = resolve_scope(
+            repo, base=base, since=since, staged_only=staged, working_tree_only=working_tree,
+            paths=list(paths) if paths else None, all_files=all_repo,
+        )
+    except GitScopeError as exc:
+        console.print(f"[red]secagent testgen: {exc}[/red]")
+        raise typer.Exit(code=1) from None
     result = generate_tests(
         repo, settings, out_dir=out, unit=not no_unit, functional=not no_functional,
-        verify=verify,
+        verify=verify, scope=scope,
     )
     console.print_json(json.dumps(result))
 
