@@ -19,6 +19,6 @@ Everything is designed to be FIPS-compatible: hashing uses SHA-256 only, TLS com
 from the system OpenSSL, and no non-validated crypto is bundled.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = ["__version__"]

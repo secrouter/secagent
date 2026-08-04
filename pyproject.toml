@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "secagent"
-version = "0.1.0"
+version = "0.2.0"
 description = "Containerized looping pi-agents for local (Gemma) models, built around an affordance engine for context reduction. FIPS-compatible."
 readme = "README.md"
 requires-python = ">=3.11"
