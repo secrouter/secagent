@@ -46,7 +46,7 @@ your own tooling.
    :members: build_docs
 
 .. automodule:: secagent.agents.review.agent
-   :members: review_merge_request, respond_to_mention
+   :members: review_merge_request, review_local_changes, respond_to_mention
 
 .. automodule:: secagent.agents.review.persona
    :members: Persona, load_persona
@@ -75,6 +75,17 @@ your own tooling.
 ```{eval-rst}
 .. automodule:: secagent.mcp.gitlab_harness
    :members: GitLabClient, build_gitlab_tools, GitLabError
+```
+
+## Git scope
+
+See {doc}`git-scope` for the user-facing guide; this is the programmatic surface.
+
+```{eval-rst}
+.. automodule:: secagent.gitscope
+   :members: GitScopeError, FileChange, ChangeSet, since_base, since_ref,
+             working_tree, staged, range, explicit, analyzable, resolve_scope,
+             describe_scope, coverage_banner, current_branch
 ```
 
 ## Security / FIPS

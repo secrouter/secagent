@@ -33,6 +33,7 @@ configuration
 running-on-a-project
 full-analysis
 use-cases
+git-scope
 gitlab-watch
 pi
 integrations

@@ -89,6 +89,7 @@ UC5: generate unit + functional component I/O tests into a separate folder (defa
 
 ```text
 secagent scan <repo> [-o OUT] [--rules <profile.yaml>] [--max-files N] [-v]
+                    [--base REF | --since REF | --staged | --working-tree | --path P... | --all]
 ```
 
 UC4: LLM rule-based memory/stability scan against a configurable rule set
@@ -96,13 +97,21 @@ UC4: LLM rule-based memory/stability scan against a configurable rule set
 it applies to, so `embedded-cpp.yaml` scans C/C++ and `rust-safety.yaml` scans Rust; a
 profile never applies its rules to a language it was not written for. See {doc}`use-cases`.
 
+**Scoped by default.** With none of the scope flags given, only the git delta since
+your branch's base is scanned (auto-detected `main`/`master`/remote default) — pass
+`--all` for the original whole-repository behavior. Exactly one of
+`--base`/`--since`/`--staged`/`--working-tree`/`--path`/`--all` may be given at a
+time. A scoped run prints a coverage banner (stderr) and carries a structured
+`scope` block in `scan.json` marking itself `partial`. Full details, the exact
+default semantics, and the JSON shape: {doc}`git-scope`.
+
 `-v` prints per-file progress on stderr. A scan costs one model call per file — minutes
 per file on a local model — so without it there is no output at all until the run ends.
 
 The report distinguishes **"no findings"** from **"could not analyse"**. Files whose model
 call failed are listed under `failures` in `scan.json`, counted in the summary, and
 flagged with an INCOMPLETE SCAN banner in the Markdown: a clean-looking report is only an
-all-clear when `analysis_complete` is true.
+all-clear when `analysis_complete` is true — which a scoped run never reports, by design.
 
 ## `secagent analyze`
 
@@ -126,6 +135,7 @@ for `index`; see the design at `docs/design/heavy-analysis-pipeline.md`.
 
 ```text
 secagent review mr <project> <mr_iid> [--repo PATH] [--dry-run]
+secagent review local <repo> [--base REF | --since REF | --staged | --working-tree | --path P...]
 secagent review serve [--host 0.0.0.0] [--port 8080] [--tls-cert C --tls-key K --tls-ca CA]
 secagent review poll <project> [--repo PATH] [--once]
 ```
@@ -134,6 +144,12 @@ secagent review poll <project> [--repo PATH] [--once]
 for affordance-aware reviews. `serve` runs the webhook receiver; `poll` is the
 webhook-free fallback (loops every `gitlab.poll_interval_s`, or one pass with
 `--once`). See {doc}`gitlab-watch` for the full loop + GitLab setup.
+
+`review local` reviews a local git delta directly — no GitLab, no MR, nothing
+posted — through the same engine `review mr` uses. Scope defaults to the delta since
+your auto-detected base branch (same default and flags as `secagent scan`, minus
+`--all`: there is no whole-repository mode here). The review text goes to stdout;
+everything else goes to stderr, so the output stays pipeable. See {doc}`git-scope`.
 
 ## `secagent audit`
 

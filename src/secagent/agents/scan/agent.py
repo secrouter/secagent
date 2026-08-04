@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from ... import gitscope
 from ...affordances import queries
 from ...affordances.io_map import component_for
 from ...affordances.languages import detect_language, rel_posix, walk_files
@@ -46,17 +47,70 @@ def scan_repo(
     *,
     out_dir: str | Path | None = None,
     paths: list[str] | None = None,
+    scope: gitscope.ChangeSet | None = None,
     llm: LLMClient | None = None,
 ) -> dict[str, Any]:
-    """Scan C/C++ files against the configured rule set using the local model."""
+    """Scan C/C++ files against the configured rule set using the local model.
+
+    ``paths`` and ``scope`` are two independent ways to narrow which files get
+    scanned. ``scope`` (a `gitscope.ChangeSet`) is what the CLI's default git-delta
+    scoping, and its ``--base``/``--since``/``--staged``/``--working-tree``/``--path``
+    flags, all resolve to (see ``cli.py``'s ``scan`` command and
+    `gitscope.resolve_scope`); ``paths`` remains a lower-level escape hatch — a plain
+    list, no scope metadata — for a direct Python caller that already has one.
+    Passing both is not meaningful; the CLI never does.
+
+    When ``scope`` is given, the FULL repository is still walked to report how many
+    analyzable files exist in total — only *which* files are sent to the model is
+    scoped, never the grounding this scan builds for itself (`_enrich` still reads
+    from the whole-repo affordance store below). The run is then unconditionally
+    reported as partial: see `analysis_complete` and the ``scope`` key below.
+    """
     repo = Path(repo).resolve()
     enforce_fips_policy(settings.fips.require_fips, settings.fips.allow_non_fips)
     ruleset = load_rules(settings.scan.rules_profile)
+    langs = set(ruleset.languages)
 
     out = Path(out_dir).resolve() if out_dir else (repo / "secagent-scan")
     out.mkdir(parents=True, exist_ok=True)
 
-    targets, eligible = _select_files(repo, settings, paths, set(ruleset.languages))
+    scope_block: dict[str, Any] | None = None
+    if scope is not None:
+        # `analyzable` is the generic (VCS/ignore-glob/binary) filter; on top of that,
+        # this scan additionally requires the ruleset's own languages — a changed
+        # README is real and in-scope for review, but not for a C/C++ rule scan. Both
+        # kinds of drop count toward the same honesty total: either way, the file was
+        # part of the delta and was NOT analyzed.
+        generic_paths, dropped_generic = gitscope.analyzable(scope, settings)
+        delta_paths = sorted(
+            (p for p in generic_paths if detect_language(repo / p) in langs),
+            key=path_rank,
+        )
+        dropped_non_analyzable = dropped_generic + (len(generic_paths) - len(delta_paths))
+        # The whole-repo count a full (`--all`) run would have scanned — computed
+        # unconditionally so the honesty banner can say "N of M", never just "N".
+        # `_select_files(..., paths=None, ...)` walks the whole repo and returns the
+        # full ranked population as its second element; only that count is wanted
+        # here, so its (uncapped) first element is discarded.
+        _, whole_repo_eligible = _select_files(repo, settings, None, langs)
+        scope.total_analyzable = len(whole_repo_eligible)
+        # `_select_files` treats a FALSY `paths` (`None` *or* `[]`) as "no explicit
+        # list, walk the whole repo" — exactly right for `paths=None`/`--all`, and
+        # exactly wrong here: a delta that touched no ruleset-language file must
+        # select NOTHING, not silently fall back to a full-repo walk.
+        targets, eligible = (
+            _select_files(repo, settings, delta_paths, langs) if delta_paths
+            else ([], [])
+        )
+        scope_block = scope.summary_dict()
+        scope_block["in_scope_files"] = len(delta_paths)
+        scope_block["dropped_non_analyzable"] = dropped_non_analyzable
+        scope_block["partial"] = True
+        banner = gitscope.coverage_banner(
+            scope, in_scope=len(delta_paths), dropped=dropped_non_analyzable)
+        log.warning("scan: %s", banner)
+    else:
+        targets, eligible = _select_files(repo, settings, paths, langs)
     eligible_total = len(eligible)
     skipped_by_cap = eligible[len(targets):]
 
@@ -402,7 +456,7 @@ def scan_repo(
         provenance = None
 
     md = render_markdown(findings, project=repo.name, ruleset_name=ruleset.name,
-                         summary=summary, banner=settings.marking.banner)
+                         summary=summary, banner=settings.marking.banner, scope=scope_block)
     md_path = out / "scan.md"
     json_path = out / "scan.json"
     md_path.write_text(md, encoding="utf-8")
@@ -417,6 +471,8 @@ def scan_repo(
         scan_payload["coverage"] = coverage_to_dict(coverage)
     if provenance is not None:
         scan_payload["provenance"] = provenance.to_dict()
+    if scope_block is not None:
+        scan_payload["scope"] = scope_block
     json_path.write_text(json.dumps(scan_payload, indent=2), encoding="utf-8")
 
     get_audit_logger(settings).record(
@@ -432,11 +488,12 @@ def scan_repo(
         "ruleset": ruleset.name,
         "files_scanned": scanned,
         "files_failed": len(failures),
-        # "Complete" means every eligible file was analysed in full. A capped run and a
-        # truncated file are both incomplete over the repository, and a consumer reading
-        # this flag to decide whether "no findings" means "clean" needs that distinction
-        # — including when the incompleteness was deliberate.
-        "analysis_complete": not failures and not partial and not skipped,
+        # "Complete" means every eligible file in the REPOSITORY was analysed in
+        # full. A capped run and a truncated file are both incomplete, and so —
+        # unconditionally — is a git-delta-scoped run: `scope_block` being set means
+        # files outside the delta were never even considered, which this flag must
+        # never let read as "clean". See `gitscope`'s module docstring.
+        "analysis_complete": scope_block is None and not failures and not partial and not skipped,
         "files_partial": len(partial),
         "files_skipped_by_cap": skipped,
         "out_dir": str(out),
@@ -451,6 +508,8 @@ def scan_repo(
         # context-flooding reason to withhold it from stdout, and stdout is exactly
         # where an agent evaluating this run's output would look for it.
         result["provenance"] = provenance.to_dict()
+    if scope_block is not None:
+        result["scope"] = scope_block
     return result
 
 

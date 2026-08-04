@@ -40,6 +40,10 @@ app.add_typer(audit_app, name="audit")
 app.add_typer(chat_app, name="chat")
 
 console = Console()
+# Informational lines that must never land in a piped/redirected result (a JSON
+# result on stdout, or `review local`'s review text) go here instead — the same
+# stdout/stderr split `progress.py`'s verbose handler already keeps.
+err_console = Console(stderr=True)
 
 
 def _settings(config: str | None):
@@ -726,11 +730,29 @@ def scan(
     rules: str | None = typer.Option(None, "--rules", help="Path to a rules YAML profile"),
     max_files: int | None = typer.Option(
         None, "--max-files",
-        help="Cap files scanned (default: the whole project; use this for a quick pass)."),
+        help="Cap files scanned within whatever is in scope (see --all/--base/... below; "
+             "use this for a quick pass)."),
     paths: list[str] | None = typer.Option(
         None, "--path",
-        help="Scan only these repo-relative files (repeatable). Beats --max-files, "
-             "which just takes the first N in sorted order."),
+        help="Scan only these repo-relative files (repeatable) — a scope source, see --all."),
+    base: str | None = typer.Option(
+        None, "--base",
+        help="Scope source (default): the delta since this base branch/ref forked from "
+             "HEAD (default: auto-detect main/master/the remote default)."),
+    since: str | None = typer.Option(
+        None, "--since",
+        help="Scope source: the delta since this ref (merge-base with HEAD) — like "
+             "--base, but no auto-detect fallback."),
+    staged: bool = typer.Option(
+        False, "--staged", help="Scope source: only staged (git add'ed) changes."),
+    working_tree: bool = typer.Option(
+        False, "--working-tree",
+        help="Scope source: only uncommitted changes vs HEAD (skips anything already "
+             "committed on this branch)."),
+    all_repo: bool = typer.Option(
+        False, "--all",
+        help="Scope source: the WHOLE repository — secagent's original behavior — "
+             "instead of scoping to a git delta."),
     config: str | None = typer.Option(None, "--config", "-c"),
     verbose: bool = typer.Option(
         False, "--verbose", "-v",
@@ -739,21 +761,38 @@ def scan(
 ) -> None:
     """UC4: LLM rule-based memory/stability scan against a rule set.
 
-    The rule profile decides the languages (C/C++ by default; see
-    config/rules/ for the Rust profile).
+    The rule profile decides the languages (C/C++ by default; see config/rules/ for
+    the Rust profile).
+
+    By default, only the git delta since the current branch's base is scanned — the
+    whole-repo index this scan builds for itself (component/purpose enrichment) is
+    unaffected; only which files spend model budget is scoped. A coverage banner
+    names the scope and how many analyzable files it covers, on stderr and in
+    ``scan.json``. Pass --all to scan the whole repository instead (today's original
+    behavior). --base/--since/--staged/--working-tree/--path/--all are mutually
+    exclusive; see ``docs/git-scope.md`` for the full model.
     """
     if verbose:
         from .progress import enable_verbose
 
         enable_verbose()
     from .agents.scan.agent import scan_repo
+    from .gitscope import GitScopeError, resolve_scope
 
     settings = _settings(config)
     if rules:
         settings.scan.rules_profile = rules
     if max_files is not None:
         settings.scan.max_files = max_files
-    result = scan_repo(repo, settings, out_dir=out, paths=list(paths) if paths else None)
+    try:
+        scope = resolve_scope(
+            repo, base=base, since=since, staged_only=staged, working_tree_only=working_tree,
+            paths=list(paths) if paths else None, all_files=all_repo,
+        )
+    except GitScopeError as exc:
+        console.print(f"[red]secagent scan: {exc}[/red]")
+        raise typer.Exit(code=1) from None
+    result = scan_repo(repo, settings, out_dir=out, scope=scope)
     console.print_json(json.dumps(result))
 
 
@@ -937,6 +976,61 @@ def review_mr(
         settings, project=project, mr_iid=mr_iid, repo=repo, post=not dry_run
     )
     console.print_json(json.dumps(result))
+
+
+@review_app.command("local")
+def review_local(
+    repo: Path = typer.Argument(..., help="Local git checkout to review"),
+    config: str | None = typer.Option(None, "--config", "-c"),
+    base: str | None = typer.Option(
+        None, "--base",
+        help="Scope source (default): the delta since this base branch/ref forked from "
+             "HEAD (default: auto-detect main/master/the remote default)."),
+    since: str | None = typer.Option(
+        None, "--since",
+        help="Scope source: the delta since this ref (merge-base with HEAD) — like "
+             "--base, but no auto-detect fallback."),
+    staged: bool = typer.Option(
+        False, "--staged", help="Scope source: only staged (git add'ed) changes."),
+    working_tree: bool = typer.Option(
+        False, "--working-tree",
+        help="Scope source: only uncommitted changes vs HEAD (skips anything already "
+             "committed on this branch)."),
+    paths: list[str] | None = typer.Option(
+        None, "--path",
+        help="Scope source: review only these repo-relative files (repeatable)."),
+) -> None:
+    """Review the local git delta directly — no GitLab, no MR, nothing posted.
+
+    Sibling to `review mr`: same engine (full-repo affordance grounding, one
+    budgeted LLM call), fed from a local `gitscope` delta instead of the GitLab API.
+    Scope defaults to the delta since the auto-detected base branch (same default as
+    `secagent scan`); override with --base/--since/--staged/--working-tree/--path
+    (mutually exclusive — see ``docs/git-scope.md``). Unlike `secagent scan`, there
+    is no whole-repository opt-out flag here: a review of an entire repository with
+    no diff to anchor it is a different tool, not this command with a flag added.
+    The review is printed to stdout as plain text; everything else (which scope was
+    used, how many files) goes to stderr, so the output stays pipeable.
+    """
+    from .agents.review.agent import review_local_changes
+    from .gitscope import GitScopeError, describe_scope, resolve_scope
+
+    settings = _settings(config)
+    try:
+        scope = resolve_scope(
+            repo, base=base, since=since, staged_only=staged, working_tree_only=working_tree,
+            paths=list(paths) if paths else None,
+        )
+        assert scope is not None  # this command exposes no --all, so never the sentinel
+        err_console.print(
+            f"[dim]Reviewing {describe_scope(scope)} — {len(scope.files)} file(s) "
+            f"changed.[/dim]"
+        )
+        result = review_local_changes(settings, repo=repo, scope=scope)
+    except GitScopeError as exc:
+        console.print(f"[red]secagent review local: {exc}[/red]")
+        raise typer.Exit(code=1) from None
+    console.print(result["review"], markup=False)
 
 
 @review_app.command("serve")

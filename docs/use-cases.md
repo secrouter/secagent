@@ -240,8 +240,9 @@ them in recall. It is not a default and should not be quoted without its run cou
 ```bash
 secagent scan path/to/repo -o ./scan
 secagent scan path/to/repo --rules config/rules/memory-critical.yaml   # alternate profile
-secagent scan path/to/repo               # the whole project (hours on a local model)
-secagent scan path/to/repo --max-files 20   # a bounded pass
+secagent scan path/to/repo               # DEFAULT: just the delta vs your base branch
+secagent scan path/to/repo --all         # the whole project (hours on a local model)
+secagent scan path/to/repo --max-files 20   # a bounded pass (within whatever is in scope)
 secagent scan path/to/repo --path src/a.c --path src/b.c   # exactly these files
 ```
 
@@ -249,6 +250,16 @@ Each file is reviewed against the rules; findings carry the **rule id**, severit
 `file:line`, a one-line explanation, and the owning component. Output is `scan.md` +
 `scan.json`, with CUI marking (`marking.banner`) and an audit record. The code sent to
 the model is wrapped as untrusted (CMMC-7).
+
+```{important}
+**The default scope changed.** `secagent scan` used to mean "the whole project";
+it now means "the delta since your branch's base" — pass `--all` for the old,
+whole-repository behavior. A scoped run prints an honest coverage banner and marks
+itself `partial` — a scoped scan finding nothing is not a clean bill of health for
+the rest of the repository. See {doc}`git-scope` for the full flag set
+(`--base`/`--since`/`--staged`/`--working-tree`), the default's exact semantics, and
+what the coverage banner/JSON block look like.
+```
 
 ### The rule set
 
@@ -605,6 +616,26 @@ secagent review mr group/project 42 --dry-run   # print a review, don't post
 secagent review mr group/project 42 --repo .    # post, with local affordance context
 secagent review serve --port 8080               # webhook receiver (automation)
 ```
+
+### Reviewing without a merge request
+
+`secagent review local <repo>` runs the identical review engine against your local
+git delta instead of a GitLab MR — no project/iid, no GitLab API, nothing posted; the
+review prints to stdout. Useful before a merge request exists at all, or in any
+workflow that is not GitLab-hosted.
+
+```bash
+secagent review local path/to/repo                 # DEFAULT: since your base branch
+secagent review local path/to/repo --staged         # about to commit? review that
+secagent review local path/to/repo --base develop   # a different base branch
+```
+
+It shares `review mr`'s engine exactly — full-repo affordance grounding, the same
+diff-budgeting, the same persona — sourcing its change list from `gitscope` (see
+{doc}`git-scope`) instead of `GitLabClient.get_merge_request_changes`. Scope defaults
+to the delta since your auto-detected base branch, same as `secagent scan`; override
+with the same `--base`/`--since`/`--staged`/`--working-tree`/`--path` flags. There is
+no `--all` here — a review needs a diff to react to.
 
 Webhook setup: point a GitLab **Merge request events** + **Comments** webhook at
 `https://<host>:8080/webhook`, with the secret token matching

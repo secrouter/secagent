@@ -163,6 +163,16 @@ def walk_files(
         yield p
 
 
+def is_ignored(rel: str, ignore_globs: list[str]) -> bool:
+    """Public single-path form of the glob check `walk_files` applies while walking.
+
+    For a caller that already has one specific repo-relative path in hand (e.g.
+    `gitscope.analyzable`, scoping a git delta rather than a fresh tree walk) and
+    needs the identical ignore-glob semantics without re-walking the whole repo.
+    """
+    return _ignored(rel, ignore_globs)
+
+
 def _ignored(rel: str, ignore_globs: list[str]) -> bool:
     for pat in ignore_globs:
         # `**/node_modules/**` conventionally means "anywhere", but fnmatch's `**/` needs

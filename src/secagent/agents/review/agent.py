@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from ... import gitscope
 from ...affordances import grounding
 from ...affordances.api import index_repo
 from ...affordances.retrieval import ContextBuilder
@@ -34,6 +35,46 @@ def _apply_marking(banner: str, body: str) -> str:
     if not banner:
         return body
     return f"**{banner}**\n\n{body}\n\n**{banner}**"
+
+
+def _review_body(
+    settings: Settings,
+    persona: Persona,
+    *,
+    meta: dict[str, Any],
+    changes: dict[str, Any],
+    repo: str | Path | None,
+    llm: LLMClient,
+) -> tuple[str, list[str], grounding.Grounding | None]:
+    """The shared review-generation core: full-repo affordance grounding, a
+    diff-budgeted prompt, one LLM call, then grounding + marking + signature.
+
+    Both `review_merge_request` (a GitLab merge request) and `review_local_changes`
+    (a local `gitscope.ChangeSet`) call this with the identical
+    ``{"changes": [{"new_path", "old_path", "diff"}, ...]}`` shape — see
+    `gitscope.ChangeSet.to_gitlab_style` — so neither forks the engine; only how
+    ``meta``/``changes`` are gathered, and what happens to the result afterward
+    (post to GitLab vs. print to stdout), differs between the two callers.
+
+    ``meta`` supplies the prompt's framing fields (``title``/``description``/
+    ``source_branch``/``target_branch``) — a real merge request's metadata, or a
+    synthesized equivalent for a local diff (see `_local_meta`).
+    """
+    changed = [c.get("new_path") or c.get("old_path") for c in changes.get("changes", [])]
+    counter = TokenCounter()
+    budget = settings.llm.context_budget_tokens
+    affordances = _affordance_context(settings, persona, repo, meta, changed, counter, budget)
+    diff_text = _budgeted_diff(changes, counter, budget // 2)
+
+    review = _generate_review(
+        llm, persona, meta, changed, affordances, diff_text, counter, budget
+    )
+    ground = _ground(settings, repo, review)
+    body = _apply_marking(
+        settings.marking.banner,
+        review + _grounding_suffix(ground) + _SIGNATURE.format(persona=persona.name)
+    )
+    return body, changed, ground
 
 
 def review_merge_request(
@@ -60,21 +101,8 @@ def review_merge_request(
     try:
         mr = gitlab.get_merge_request(project, mr_iid)
         changes = gitlab.get_merge_request_changes(project, mr_iid)
-        changed = gitlab.changed_paths(changes)
-
-        counter = TokenCounter()
-        budget = settings.llm.context_budget_tokens
-        affordances = _affordance_context(settings, persona, repo, mr, changed, counter, budget)
-        diff_text = _budgeted_diff(changes, counter, budget // 2)
-
-        review = _generate_review(
-            llm, persona, mr, changed, affordances, diff_text, counter, budget
-        )
-        ground = _ground(settings, repo, review)
-        body = _apply_marking(
-            settings.marking.banner,
-            review + _grounding_suffix(ground) + _SIGNATURE.format(persona=persona.name)
-        )
+        body, changed, ground = _review_body(
+            settings, persona, meta=mr, changes=changes, repo=repo, llm=llm)
 
         result: dict[str, Any] = {
             "project": project,
@@ -100,6 +128,91 @@ def review_merge_request(
     finally:
         if owns_gl:
             gitlab.close()
+        if owns_llm:
+            llm.close()
+
+
+_LOCAL_SCOPE_LABELS = {
+    "since_base": "the {base} branch",
+    "since_ref": "{base}",
+    "working_tree": "HEAD (uncommitted changes)",
+    "staged": "HEAD (staged changes)",
+    "range": "{base}..{head}",
+    "explicit": "an explicit file list",
+}
+
+
+def _local_meta(repo: Path, scope: gitscope.ChangeSet) -> dict[str, Any]:
+    """Synthesize the merge-request-shaped metadata `_review_body` expects, from a
+    local `gitscope.ChangeSet` — there is no real MR title/description/branches to
+    read, so this is what the prompt sees instead."""
+    branch = gitscope.current_branch(repo)
+    label = _LOCAL_SCOPE_LABELS.get(scope.scope, scope.scope).format(
+        base=scope.base_ref, head=scope.head_sha)
+    return {
+        "title": f"Local changes on {branch}, vs {label}",
+        "description": "",
+        "source_branch": branch,
+        "target_branch": scope.base_ref or "(none)",
+    }
+
+
+def review_local_changes(
+    settings: Settings,
+    *,
+    repo: str | Path,
+    scope: gitscope.ChangeSet | None = None,
+    base: str | None = None,
+    llm: LLMClient | None = None,
+) -> dict[str, Any]:
+    """Generate a review of the local git delta — no GitLab, nothing posted.
+
+    Reuses the exact same review-generation path `review_merge_request` uses
+    (`_review_body`): full-repo affordance grounding (delta-prioritized), a
+    diff-budgeted prompt, one LLM call. The only differences are where the change
+    list comes from — a local `gitscope.ChangeSet` (default: `gitscope.since_base`,
+    i.e. the delta since the auto-detected base branch) instead of the GitLab API —
+    and that nothing is posted; the caller (the CLI) prints the result.
+
+    ``scope`` is normally supplied already resolved (the CLI builds it via
+    `gitscope.resolve_scope`, honoring `--base`/`--since`/`--staged`/
+    `--working-tree`/`--path`); left unset, this resolves `gitscope.since_base`
+    itself so a direct Python caller does not have to build one by hand.
+    """
+    from ...netpolicy import enforce
+    from ...security import enforce_fips_policy
+
+    enforce_fips_policy(settings.fips.require_fips, settings.fips.allow_non_fips)
+    enforce(settings)  # validate the LLM endpoint (TLS / allow-list)
+    persona = load_persona(settings.persona.profile)
+    repo_path = Path(repo)
+    if scope is None:
+        scope = gitscope.since_base(repo_path, base=base)
+
+    owns_llm = llm is None
+    llm = llm or LLMClient(settings.llm)
+    try:
+        meta = _local_meta(repo_path, scope)
+        changes = scope.to_gitlab_style()
+        body, changed, ground = _review_body(
+            settings, persona, meta=meta, changes=changes, repo=repo_path, llm=llm)
+
+        result: dict[str, Any] = {
+            "repo": str(repo_path),
+            "scope": scope.summary_dict(),
+            "changed_files": changed,
+            "persona": persona.name,
+            "review": body,
+            "grounding": ground.to_dict() if ground else None,
+        }
+        get_audit_logger(settings).record(
+            "review_local",
+            target={"repo": str(repo_path), "scope": scope.scope,
+                    "changed_files": len(changed)},
+            model=settings.llm.model, endpoint=settings.llm.base_url,
+        )
+        return result
+    finally:
         if owns_llm:
             llm.close()
 

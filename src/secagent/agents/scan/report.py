@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from typing import Any
 
 from .models import ScanFinding
 
@@ -24,12 +25,29 @@ def summarize(findings: list[ScanFinding]) -> dict[str, object]:
 def render_markdown(
     findings: list[ScanFinding], *, project: str, ruleset_name: str,
     summary: dict[str, object], banner: str = "",
+    scope: dict[str, Any] | None = None,
 ) -> str:
     lines: list[str] = []
     if banner:
         lines += [f"**{banner}**", ""]
     lines += [f"# Memory & stability scan — {project}", "",
               f"Rule set: `{ruleset_name}`.", ""]
+    # A git-delta-scoped run must say so before anything else below it is read: every
+    # other warning in this report (partial/failed/skipped) describes what happened
+    # to the file SET this run considered, and that set itself may already be a small
+    # slice of the repository. Placed first because it frames how to read the rest.
+    if scope:
+        lines += [
+            f"> ⚠️ **SCOPED RUN — only the git delta was scanned** "
+            f"(`{scope.get('kind')}`, base `{scope.get('base_ref')}` "
+            f"@ `{str(scope.get('base_sha') or '')[:8]}`).",
+            f"> {scope.get('in_scope_files', 0)} of "
+            f"{scope.get('total_analyzable', 0)} analyzable file(s) in the repository "
+            "were in scope; everything outside the delta was **not examined**. This "
+            "is a PARTIAL result over the repository, not a full scan. Pass `--all` "
+            "for a whole-repo run. See `scope` in `scan.json`.",
+            "",
+        ]
     # An incomplete scan must never read as an all-clear. This is a memory-safety tool:
     # "no findings" when the analysis never ran is its most dangerous possible output.
     raw_failed = summary.get("files_failed", 0)
@@ -83,7 +101,7 @@ def render_markdown(
     if not findings:
         lines += [
             "No findings against the configured rules."
-            if not (failed or partial or skipped)
+            if not (failed or partial or skipped or scope)
             else "No findings in the source that was actually examined — but see the "
                  "warning(s) above; this is a lower bound, not an all-clear.",
             "",
