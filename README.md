@@ -14,8 +14,8 @@ clang, C# and Rust via tree-sitter, with optional fully-resolved backends) — s
 the integration.)
 
 The toolset is **portable** and **endpoint-agnostic**: pi and secagent both point at any
-OpenAI-compatible endpoint (llama.cpp `llama-server` or vLLM). No model server is
-bundled.
+OpenAI-compatible endpoint (llama.cpp `llama-server`, vLLM, or a gateway such as
+SecRouter). No model server is bundled.
 
 The use cases, all built on the same affordance engine:
 

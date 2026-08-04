@@ -79,8 +79,11 @@ Same shape, different file: `~/.config/opencode/opencode.json` globally, or
   against an existing index, but the *first* call may trigger an auto-index. Either index
   ahead of time or allow ~30s.
 - **Point secagent at your model** if you want LLM-written summaries, via
-  `SECAGENT_LLM__BASE_URL` / `SECAGENT_LLM__MODEL` in the config's `environment` block. The
-  affordance tools themselves do not call a model — only indexing does.
+  `SECAGENT_LLM__BASE_URL` / `SECAGENT_LLM__MODEL` in the config's `environment` block —
+  any OpenAI-compatible endpoint works, including a gateway such as SecRouter
+  (`SECAGENT_LLM__BASE_URL=https://secrouter.<domain>:47002/v1`, `SECAGENT_LLM__API_KEY`
+  carrying the bearer token; see {doc}`configuration`). The affordance tools themselves do
+  not call a model — only indexing does.
 - **Check `SECAGENT_LLM__CONTEXT_WINDOW` against what your server serves.** The default
   (131072) suits a modern local Gemma; lower it for a smaller model. `secagent doctor
   --probe` reads the real number off the server and flags a mismatch either way — see

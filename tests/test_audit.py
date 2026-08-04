@@ -6,8 +6,9 @@ import json
 from pathlib import Path
 
 from secagent.affordances.api import index_repo
-from secagent.audit import AuditLogger, get_audit_logger, redact_url, verify_chain
+from secagent.audit import AuditEvent, AuditLogger, get_audit_logger, redact_url, verify_chain
 from secagent.config import Settings
+from secagent.security import text_hash
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_repo"
 
@@ -106,3 +107,118 @@ def test_index_repo_emits_audit_record(tmp_path):
     assert ok
     actions = [json.loads(x)["action"] for x in Path(s.audit.path).read_text().splitlines()]
     assert "index" in actions
+
+
+# -- chat interaction events (UC101 Mattermost front end) --------------------------
+
+
+def test_audit_config_capture_content_defaults_false():
+    assert Settings().audit.capture_content is False
+
+
+def test_get_audit_logger_capture_content_from_settings(tmp_path):
+    s = Settings()
+    s.audit.enabled = True
+    s.audit.path = str(tmp_path / "a.jsonl")
+    s.audit.capture_content = True
+    logger = get_audit_logger(s)
+    assert logger.capture_content is True
+
+
+def test_record_chat_metadata_mode_hashes_content(tmp_path):
+    """Default (capture_content=False): end_user + a hash are recorded, never the text."""
+    log = tmp_path / "audit.jsonl"
+    logger = AuditLogger(log, enabled=True, principal="service:secchat-bot")
+    rec = logger.record_chat(
+        "review_mr",
+        end_user="mattermost:alice",
+        channel="town-square",
+        thread="thr-123",
+        message="please review MR 42",
+        reply="Looks good, one nit.",
+    )
+    assert rec is not None
+    assert rec["principal"] == "service:secchat-bot"  # service identity, unchanged
+    assert rec["end_user"] == "mattermost:alice"       # NEW: distinct end-user identity
+    assert rec["cui"] is False
+    assert rec["target"]["channel"] == "town-square"
+    assert rec["target"]["thread"] == "thr-123"
+    assert rec["target"]["message_sha256"] == text_hash("please review MR 42")
+    assert rec["target"]["reply_sha256"] == text_hash("Looks good, one nit.")
+    # No verbatim content anywhere in the record — metadata mode is CUI-free.
+    assert "message" not in rec["target"]
+    assert "reply" not in rec["target"]
+    dumped = json.dumps(rec)
+    assert "please review MR 42" not in dumped
+    assert "Looks good, one nit." not in dumped
+
+
+def test_record_chat_capture_content_includes_verbatim_and_tags_cui(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    logger = AuditLogger(log, enabled=True, capture_content=True)
+    rec = logger.record_chat(
+        "analyze",
+        end_user="mattermost:bob",
+        channel="secops",
+        thread="thr-9",
+        message="analyze this repo",
+        reply="Done, 3 findings.",
+    )
+    assert rec is not None
+    assert rec["cui"] is True
+    assert rec["target"]["message"] == "analyze this repo"
+    assert rec["target"]["reply"] == "Done, 3 findings."
+    # The digest is still present alongside the verbatim text (cheap, harmless, useful
+    # for correlation/search even when the plaintext is also captured).
+    assert rec["target"]["message_sha256"] == text_hash("analyze this repo")
+
+
+def test_record_chat_per_call_override(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    # Logger default is metadata-only; one call opts into verbatim capture.
+    logger = AuditLogger(log, enabled=True, capture_content=False)
+    rec = logger.record_chat(
+        "scan", end_user="mattermost:carol", message="hello", capture_content=True,
+    )
+    assert rec["cui"] is True
+    assert rec["target"]["message"] == "hello"
+
+    # And the reverse: a capture_content=True logger can still be told "not this time".
+    logger2 = AuditLogger(log, enabled=True, capture_content=True)
+    rec2 = logger2.record_chat(
+        "scan", end_user="mattermost:carol", message="secret stuff", capture_content=False,
+    )
+    assert rec2["cui"] is False
+    assert "message" not in rec2["target"]
+
+
+def test_record_chat_empty_message_has_no_hash(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    logger = AuditLogger(log, enabled=True)
+    rec = logger.record_chat("scan", end_user="mattermost:dave")
+    assert rec["target"]["message_sha256"] == ""
+    assert rec["target"]["reply_sha256"] == ""
+
+
+def test_record_chat_chain_still_verifies(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    logger = AuditLogger(log, enabled=True)
+    logger.record("index", target={"repo": "r"})
+    logger.record_chat("review_mr", end_user="mattermost:alice", message="hi", reply="hey")
+    logger.record_chat(
+        "scan", end_user="mattermost:bob", message="go", capture_content=True,
+    )
+    ok, msg = verify_chain(log)
+    assert ok, msg
+
+
+def test_audit_event_end_user_and_cui_roundtrip(tmp_path):
+    """AuditEvent (the dataclass path via .event()) also carries end_user/cui."""
+    log = tmp_path / "audit.jsonl"
+    logger = AuditLogger(log, enabled=True)
+    ev = AuditEvent(
+        action="chat_message", target={"channel": "c1"}, end_user="mattermost:eve", cui=True,
+    )
+    rec = logger.event(ev)
+    assert rec["end_user"] == "mattermost:eve"
+    assert rec["cui"] is True

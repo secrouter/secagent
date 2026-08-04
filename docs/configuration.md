@@ -48,6 +48,35 @@ export SECAGENT_LLM__BASE_URL="http://gemma-host:8000/v1"
 export SECAGENT_LLM__CONTEXT_WINDOW=131072
 ```
 
+#### Inference at SecRouter
+
+`llm.base_url` is endpoint-agnostic — anything that speaks the OpenAI `/v1/chat/completions`
+shape works, including **SecRouter**, the suite's LLM gateway. Point secagent at it the
+same way you would any other endpoint, no code changes:
+
+```bash
+export SECAGENT_LLM__BASE_URL="https://secrouter.<domain>:47002/v1"
+export SECAGENT_LLM__MODEL="<model name SecRouter exposes for this token>"
+export SECAGENT_LLM__API_KEY="<bearer token SecRouter issued>"
+```
+
+or in YAML:
+
+```yaml
+llm:
+  base_url: "https://secrouter.<domain>:47002/v1"
+  api_key: "<bearer token SecRouter issued>"
+  model: "<model name SecRouter exposes for this token>"
+```
+
+`api_key` is sent as `Authorization: Bearer <api_key>` (`llm/client.py`) — that header is
+how SecRouter authenticates the request — and, like every other secret in this config, it
+is never logged and is redacted (`***`) by `secagent config`. TLS is verified against the
+system (FIPS) trust store the same as any other `https://` endpoint; pair this with
+`network.require_tls` / `network.allowed_hosts` below if you want secagent to refuse to
+fall back to an unlisted endpoint. `secagent doctor --probe` works unchanged — it queries
+whatever `base_url` currently points at, SecRouter included.
+
 ### `affordances`
 
 ```yaml
@@ -168,14 +197,31 @@ detectable. Verify with `secagent audit verify`.
 audit:
   enabled: false                       # enable in CMMC/CUI deployments
   path: ".secagent/audit/audit.jsonl"    # use an absolute, protected, SIEM-forwarded path
-  principal: ""                        # identity per event (falls back to $SECAGENT_PRINCIPAL)
+  principal: ""                        # SERVICE identity per event (falls back to $SECAGENT_PRINCIPAL)
   echo_stderr: false                   # also emit each record to stderr
+  capture_content: false               # chat message/reply text: digest-only vs. verbatim
 ```
 
 ```{tip}
 Forward the log to your SIEM and restrict its file permissions — secagent makes records
 tamper-evident, but storage protection (AU.L2-3.3.8) is the environment's job.
 ```
+
+**Chat interactions (UC101).** A chat-driven action (`AuditLogger.record_chat`) carries a
+second identity, `end_user` — the Mattermost user who triggered it — kept distinct from
+`principal`, which stays the service/bot identity; one bot principal would otherwise
+collapse every user into a single attribution. Because the message/reply text is
+CUI-sensitive, `capture_content` (default `false`) decides how it is recorded:
+
+- `false` (default) — only a SHA-256 digest of the message/reply is recorded
+  (`target.message_sha256` / `target.reply_sha256`); the record contains no CUI.
+- `true` — the verbatim text is recorded too (`target.message` / `target.reply`), and
+  the whole record is tagged `cui: true` so it can be routed, retained, or
+  access-controlled as CUI downstream without inspecting `target`.
+
+Set via `SECAGENT_AUDIT__CAPTURE_CONTENT=true`, or per-call for one interaction
+regardless of the configured default. The hash chain and `verify_chain` cover chat
+records exactly like any other action.
 
 ### `network`
 

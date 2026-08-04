@@ -554,10 +554,21 @@ class AuditConfig(BaseModel):
     enabled: bool = False
     # Path to the JSONL audit log (use an absolute, protected, SIEM-forwarded path).
     path: str = ".secagent/audit/audit.jsonl"
-    # Identity recorded in each event; falls back to $SECAGENT_PRINCIPAL.
+    # Identity recorded in each event; falls back to $SECAGENT_PRINCIPAL. This is the
+    # SERVICE/process identity (e.g. "service:secagent-bot"), not the end user — chat
+    # interactions (UC101) additionally carry a per-request `end_user` (the Mattermost
+    # username), recorded via AuditLogger.record_chat, so one bot principal does not
+    # collapse many different people into a single attribution.
     principal: str = ""
     # Also echo each record to stderr (useful for container log collection).
     echo_stderr: bool = False
+    # Chat interaction content (the user's message, the bot's reply) is CUI-sensitive.
+    # False (default): AuditLogger.record_chat writes only a SHA-256 digest of each —
+    # CUI-free, safe to forward to an unrestricted SIEM. True: the verbatim text is
+    # recorded too, and the record is tagged `cui: true` so it can be routed, retained,
+    # or access-controlled as CUI downstream. Only affects record_chat; every other
+    # event type never carries message content either way.
+    capture_content: bool = False
 
 
 class Settings(BaseSettings):

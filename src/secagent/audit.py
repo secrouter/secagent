@@ -2,12 +2,22 @@
 
 Addresses NIST SP 800-171 / CMMC L2 audit & accountability controls (AU.L2-3.3.1,
 3.3.2, 3.3.4, 3.3.8). Every agent action — indexing, docs generation, MR reviews and
-replies, and MCP tool calls — is recorded as one append-only JSONL line, chained with
-a SHA-256 (FIPS-approved) hash so any insertion, deletion, or edit is detectable.
+replies, chat interactions (UC101), and MCP tool calls — is recorded as one
+append-only JSONL line, chained with a SHA-256 (FIPS-approved) hash so any insertion,
+deletion, or edit is detectable.
 
 The logger is a no-op when disabled (the default), so it adds nothing unless an
 operator opts in via ``audit.enabled`` / ``SECAGENT_AUDIT__ENABLED=true``. It never
 records secrets, and credentials are stripped from any URL before logging.
+
+Chat interactions (:meth:`AuditLogger.record_chat`) carry a second identity —
+``end_user``, the human behind a Mattermost/chat front end — distinct from
+``principal`` (the service/process identity every record already carries), so a
+single bot principal does not collapse many different users into one attribution
+(AU.L2-3.3.2). Message/reply content is CUI-sensitive by default: only a SHA-256
+digest is recorded unless the operator opts into ``audit.capture_content`` /
+``SECAGENT_AUDIT__CAPTURE_CONTENT=true``, in which case the verbatim text is recorded
+and the record is tagged ``cui: true``.
 """
 
 from __future__ import annotations
@@ -62,6 +72,8 @@ class AuditEvent:
     endpoint: str = ""
     outcome: str = "ok"  # ok | error
     detail: str = ""
+    end_user: str = ""  # human behind a chat/UI front end; distinct from `principal`
+    cui: bool = False   # True when `target` carries verbatim CUI-sensitive content
 
 
 class AuditLogger:
@@ -79,10 +91,13 @@ class AuditLogger:
         enabled: bool = True,
         principal: str = "service:secagent",
         echo_stderr: bool = False,
+        capture_content: bool = False,
     ) -> None:
         self.enabled = enabled
         self.principal = principal
         self.echo_stderr = echo_stderr
+        # Default for record_chat()'s own `capture_content` param (None = follow this).
+        self.capture_content = capture_content
         self.run_id = uuid.uuid4().hex
         self._seq = 0
         self._lock = threading.Lock()
@@ -103,8 +118,18 @@ class AuditLogger:
         endpoint: str = "",
         outcome: str = "ok",
         detail: str = "",
+        end_user: str = "",
+        cui: bool = False,
     ) -> dict[str, Any] | None:
-        """Append one audit record. Returns the written record (or None if disabled)."""
+        """Append one audit record. Returns the written record (or None if disabled).
+
+        ``end_user`` attributes the record to the human behind a chat/UI front end
+        (e.g. a Mattermost username), kept separate from ``principal`` (the
+        service/process identity every record carries). ``cui`` flags a record whose
+        ``target`` carries verbatim CUI-sensitive content (see :meth:`record_chat`), so
+        it can be filtered or handled specially downstream without inspecting
+        ``target``.
+        """
         if not self.enabled:
             return None
         with self._lock:
@@ -115,12 +140,14 @@ class AuditLogger:
                 "run_id": self.run_id,
                 "seq": self._seq,
                 "principal": self.principal,
+                "end_user": end_user,
                 "action": action,
                 "target": target or {},
                 "model": model,
                 "endpoint": redact_url(endpoint),
                 "outcome": outcome,
                 "detail": detail[:500],
+                "cui": cui,
                 "prev_hash": self._prev_hash,
             }
             digest = text_hash(_canonical(record))
@@ -132,7 +159,61 @@ class AuditLogger:
     def event(self, ev: AuditEvent) -> dict[str, Any] | None:
         return self.record(
             ev.action, target=ev.target, model=ev.model, endpoint=ev.endpoint,
-            outcome=ev.outcome, detail=ev.detail,
+            outcome=ev.outcome, detail=ev.detail, end_user=ev.end_user, cui=ev.cui,
+        )
+
+    def record_chat(
+        self,
+        action: str,
+        *,
+        end_user: str,
+        channel: str = "",
+        thread: str = "",
+        message: str = "",
+        reply: str = "",
+        capture_content: bool | None = None,
+        model: str = "",
+        endpoint: str = "",
+        outcome: str = "ok",
+        detail: str = "",
+    ) -> dict[str, Any] | None:
+        """Record a chat-driven interaction (UC101 Mattermost front end).
+
+        ``action`` is the use case invoked (e.g. ``"review_mr"``, ``"scan"``) — the
+        same vocabulary :meth:`record` already uses for every other event. ``end_user``
+        is the Mattermost user who triggered it (distinct from ``principal``, the
+        service/bot identity); ``channel``/``thread`` locate the conversation.
+
+        Message/reply content is CUI-sensitive, so by default only a SHA-256 digest of
+        each is recorded — ``target["message_sha256"]`` / ``["reply_sha256"]`` — never
+        the text itself. Set ``capture_content=True`` (or configure the logger's
+        default via ``audit.capture_content`` / ``SECAGENT_AUDIT__CAPTURE_CONTENT``) to
+        additionally record the verbatim text (``target["message"]`` / ``["reply"]``);
+        doing so tags the whole record ``cui: true`` so it can be routed, retained, or
+        access-controlled as CUI downstream without inspecting ``target``.
+        ``capture_content=None`` (the default here) follows this logger's configured
+        default (``self.capture_content``); pass an explicit bool to override it for
+        one call.
+        """
+        effective = self.capture_content if capture_content is None else capture_content
+        target: dict[str, Any] = {
+            "channel": channel,
+            "thread": thread,
+            "message_sha256": text_hash(message) if message else "",
+            "reply_sha256": text_hash(reply) if reply else "",
+        }
+        if effective:
+            target["message"] = message
+            target["reply"] = reply
+        return self.record(
+            action,
+            target=target,
+            model=model,
+            endpoint=endpoint,
+            outcome=outcome,
+            detail=detail,
+            end_user=end_user,
+            cui=effective,
         )
 
     def _write(self, record: dict[str, Any]) -> None:
@@ -160,6 +241,7 @@ def get_audit_logger(settings) -> AuditLogger:
         enabled=cfg.enabled,
         principal=principal,
         echo_stderr=cfg.echo_stderr,
+        capture_content=cfg.capture_content,
     )
 
 
