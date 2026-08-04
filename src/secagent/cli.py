@@ -693,6 +693,10 @@ def docs_build(
         False, "--working-tree",
         help="Scope source: only uncommitted changes vs HEAD (skips anything already "
              "committed on this branch)."),
+    range_: str | None = typer.Option(
+        None, "--range",
+        help="Scope source: a fixed commit range A..B (git diff A..B — two real "
+             "commits, no working tree; handy in CI over a push's range)."),
     all_repo: bool = typer.Option(
         False, "--all",
         help="Scope source: refresh summaries for the WHOLE repository — secagent's "
@@ -708,7 +712,7 @@ def docs_build(
     previous build). A coverage banner names the scope and how many files were
     refreshed, on stderr and in ``summaries.json``. Pass --all to refresh the whole
     repository instead (the original behavior). --base/--since/--staged/
-    --working-tree/--path/--all are mutually exclusive; see ``docs/git-scope.md``.
+    --working-tree/--path/--range/--all are mutually exclusive; see ``docs/git-scope.md``.
     """
     if verbose:
         from .progress import enable_verbose
@@ -724,10 +728,10 @@ def docs_build(
     try:
         scope = resolve_scope(
             path, base=base, since=since, staged_only=staged, working_tree_only=working_tree,
-            paths=list(paths) if paths else None, all_files=all_repo,
+            paths=list(paths) if paths else None, range_spec=range_, all_files=all_repo,
         )
     except GitScopeError as exc:
-        console.print(f"[red]secagent docs build: {exc}[/red]")
+        console.print(f"[red]secagent docs build: {exc}[/red]", soft_wrap=True)
         raise typer.Exit(code=1) from None
     result = build_docs(path, out, settings, run_sphinx=not no_build, scope=scope)
     console.print_json(json.dumps(result))
@@ -764,6 +768,10 @@ def testgen(
         False, "--working-tree",
         help="Scope source: only uncommitted changes vs HEAD (skips anything already "
              "committed on this branch)."),
+    range_: str | None = typer.Option(
+        None, "--range",
+        help="Scope source: a fixed commit range A..B (git diff A..B — two real "
+             "commits, no working tree; handy in CI over a push's range)."),
     all_repo: bool = typer.Option(
         False, "--all",
         help="Scope source: generate tests for the WHOLE repository — secagent's "
@@ -782,7 +790,7 @@ def testgen(
     whole-repo affordance index is still read for grounding, and tests still land in
     the same side tree (``--out``/``secagent-tests``). A coverage banner names the
     scope, on stderr and in ``manifest.json``. Pass --all for the original whole-repo
-    generation. --base/--since/--staged/--working-tree/--path/--all are mutually
+    generation. --base/--since/--staged/--working-tree/--path/--range/--all are mutually
     exclusive; see ``docs/git-scope.md``.
     """
     from .agents.testgen.agent import generate_tests
@@ -792,10 +800,10 @@ def testgen(
     try:
         scope = resolve_scope(
             repo, base=base, since=since, staged_only=staged, working_tree_only=working_tree,
-            paths=list(paths) if paths else None, all_files=all_repo,
+            paths=list(paths) if paths else None, range_spec=range_, all_files=all_repo,
         )
     except GitScopeError as exc:
-        console.print(f"[red]secagent testgen: {exc}[/red]")
+        console.print(f"[red]secagent testgen: {exc}[/red]", soft_wrap=True)
         raise typer.Exit(code=1) from None
     result = generate_tests(
         repo, settings, out_dir=out, unit=not no_unit, functional=not no_functional,
@@ -830,6 +838,10 @@ def scan(
         False, "--working-tree",
         help="Scope source: only uncommitted changes vs HEAD (skips anything already "
              "committed on this branch)."),
+    range_: str | None = typer.Option(
+        None, "--range",
+        help="Scope source: a fixed commit range A..B (git diff A..B — two real "
+             "commits, no working tree; handy in CI over a push's range)."),
     all_repo: bool = typer.Option(
         False, "--all",
         help="Scope source: the WHOLE repository — secagent's original behavior — "
@@ -850,7 +862,7 @@ def scan(
     unaffected; only which files spend model budget is scoped. A coverage banner
     names the scope and how many analyzable files it covers, on stderr and in
     ``scan.json``. Pass --all to scan the whole repository instead (today's original
-    behavior). --base/--since/--staged/--working-tree/--path/--all are mutually
+    behavior). --base/--since/--staged/--working-tree/--path/--range/--all are mutually
     exclusive; see ``docs/git-scope.md`` for the full model.
     """
     if verbose:
@@ -868,10 +880,10 @@ def scan(
     try:
         scope = resolve_scope(
             repo, base=base, since=since, staged_only=staged, working_tree_only=working_tree,
-            paths=list(paths) if paths else None, all_files=all_repo,
+            paths=list(paths) if paths else None, range_spec=range_, all_files=all_repo,
         )
     except GitScopeError as exc:
-        console.print(f"[red]secagent scan: {exc}[/red]")
+        console.print(f"[red]secagent scan: {exc}[/red]", soft_wrap=True)
         raise typer.Exit(code=1) from None
     result = scan_repo(repo, settings, out_dir=out, scope=scope)
     console.print_json(json.dumps(result))
@@ -1077,6 +1089,10 @@ def review_local(
         False, "--working-tree",
         help="Scope source: only uncommitted changes vs HEAD (skips anything already "
              "committed on this branch)."),
+    range_: str | None = typer.Option(
+        None, "--range",
+        help="Scope source: a fixed commit range A..B (git diff A..B — two real "
+             "commits, no working tree; handy in CI over a push's range)."),
     paths: list[str] | None = typer.Option(
         None, "--path",
         help="Scope source: review only these repo-relative files (repeatable)."),
@@ -1086,7 +1102,7 @@ def review_local(
     Sibling to `review mr`: same engine (full-repo affordance grounding, one
     budgeted LLM call), fed from a local `gitscope` delta instead of the GitLab API.
     Scope defaults to the delta since the auto-detected base branch (same default as
-    `secagent scan`); override with --base/--since/--staged/--working-tree/--path
+    `secagent scan`); override with --base/--since/--staged/--working-tree/--path/--range
     (mutually exclusive — see ``docs/git-scope.md``). Unlike `secagent scan`, there
     is no whole-repository opt-out flag here: a review of an entire repository with
     no diff to anchor it is a different tool, not this command with a flag added.
@@ -1100,7 +1116,7 @@ def review_local(
     try:
         scope = resolve_scope(
             repo, base=base, since=since, staged_only=staged, working_tree_only=working_tree,
-            paths=list(paths) if paths else None,
+            paths=list(paths) if paths else None, range_spec=range_,
         )
         assert scope is not None  # this command exposes no --all, so never the sentinel
         err_console.print(
@@ -1109,7 +1125,7 @@ def review_local(
         )
         result = review_local_changes(settings, repo=repo, scope=scope)
     except GitScopeError as exc:
-        console.print(f"[red]secagent review local: {exc}[/red]")
+        console.print(f"[red]secagent review local: {exc}[/red]", soft_wrap=True)
         raise typer.Exit(code=1) from None
     console.print(result["review"], markup=False)
 

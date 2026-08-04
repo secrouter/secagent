@@ -571,6 +571,24 @@ def current_branch(repo: str | Path) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _parse_range(repo: str | Path, spec: str) -> ChangeSet:
+    """Parse a ``--range`` value (``A..B``, two dots) and resolve it via :func:`range`.
+
+    Git ref names cannot contain ``..``, so a plain partition is unambiguous; the
+    three-dot ``A...B`` (symmetric-difference) form is rejected rather than silently
+    mishandled, since :func:`range` only implements the two-dot ``git diff A..B``.
+    """
+    if "..." in spec:
+        raise GitScopeError(
+            f"--range takes a two-dot range 'A..B'; three-dot 'A...B' is not "
+            f"supported (got {spec!r})"
+        )
+    a, sep, b = spec.partition("..")
+    if sep != ".." or not a or not b or ".." in b:
+        raise GitScopeError(f"--range must be 'A..B' — two refs separated by '..' (got {spec!r})")
+    return range(repo, a, b)
+
+
 def resolve_scope(
     repo: str | Path,
     *,
@@ -580,6 +598,7 @@ def resolve_scope(
     working_tree_only: bool = False,
     paths: list[str] | None = None,
     all_files: bool = False,
+    range_spec: str | None = None,
 ) -> ChangeSet | None:
     """Turn a scoped CLI command's flags into a `ChangeSet`, or ``None`` for
     ``--all`` (the whole-repo opt-out). Shared by every scoped command (`secagent
@@ -599,13 +618,14 @@ def resolve_scope(
             ("--staged", staged_only),
             ("--working-tree", working_tree_only),
             ("--path", bool(paths)),
+            ("--range", range_spec is not None),
             ("--all", all_files),
         ) if on
     ]
     if len(active) > 1:
         raise GitScopeError(
             "pass only one scope option, got " + " and ".join(active) + " — "
-            "--base/--since/--staged/--working-tree/--path/--all are mutually exclusive"
+            "--base/--since/--staged/--working-tree/--path/--range/--all are mutually exclusive"
         )
     if all_files:
         return None
@@ -617,4 +637,6 @@ def resolve_scope(
         return working_tree(repo)
     if paths:
         return explicit(repo, paths)
+    if range_spec is not None:
+        return _parse_range(repo, range_spec)
     return since_base(repo, base=base)

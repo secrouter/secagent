@@ -607,6 +607,39 @@ def test_resolve_scope_rejects_more_than_one_active_source(tmp_path, kwargs):
         gitscope.resolve_scope(repo, **kwargs)
 
 
+def _two_commit_repo(tmp_path):
+    """A repo with two commits: returns (repo, first_sha, second_sha)."""
+    repo = _init_repo(tmp_path)
+    _write(repo, "a.txt", "one\n")
+    _commit(repo, "first")
+    first = _git(repo, "rev-parse", "HEAD").strip()
+    _write(repo, "a.txt", "one\ntwo\n")
+    _write(repo, "b.txt", "new\n")
+    _commit(repo, "second")
+    second = _git(repo, "rev-parse", "HEAD").strip()
+    return repo, first, second
+
+
+def test_resolve_scope_range_dispatches_to_range(tmp_path):
+    repo, first, second = _two_commit_repo(tmp_path)
+    cs = gitscope.resolve_scope(repo, range_spec=f"{first}..{second}")
+    assert cs is not None and cs.scope == "range"
+    assert set(cs.paths()) == {"a.txt", "b.txt"}
+
+
+def test_resolve_scope_range_conflicts_with_another_source(tmp_path):
+    repo, first, second = _two_commit_repo(tmp_path)
+    with pytest.raises(gitscope.GitScopeError, match="mutually exclusive"):
+        gitscope.resolve_scope(repo, staged_only=True, range_spec=f"{first}..{second}")
+
+
+@pytest.mark.parametrize("bad", ["nodots", "a...b", "..b", "a..", ""])
+def test_resolve_scope_range_rejects_malformed(tmp_path, bad):
+    repo, _first, _second = _two_commit_repo(tmp_path)
+    with pytest.raises(gitscope.GitScopeError):
+        gitscope.resolve_scope(repo, range_spec=bad)
+
+
 def test_resolve_scope_dispatches_staged_working_tree_and_paths(tmp_path):
     repo = _init_repo(tmp_path)
     _write(repo, "a.txt", "x\n")

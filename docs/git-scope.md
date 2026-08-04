@@ -56,6 +56,7 @@ them, e.g. `--staged --working-tree`, rather than silently picking one):
 | `--staged` | only what is `git add`ed | the index vs `HEAD`; untracked files are never staged, so none are included |
 | `--working-tree` | only uncommitted changes vs `HEAD` | skips anything already committed on this branch, unlike the default |
 | `--path <p>` | exactly these files (repeatable) | no git involved — a plain list, still scoped the same way |
+| `--range A..B` | a fixed commit range (`git diff A..B`) | two real commits — no working tree or untracked files; handy in CI over a push's range |
 | `--all` (`scan`/`docs build`/`testgen`) | the whole repository | secagent's original, pre-scoping behavior |
 
 ```bash
@@ -63,6 +64,7 @@ secagent scan path/to/repo --staged                       # about to commit? rev
 secagent scan path/to/repo --working-tree                  # uncommitted edits only
 secagent scan path/to/repo --base develop                  # a different base branch
 secagent scan path/to/repo --path src/a.c --path src/b.c   # exactly these files
+secagent scan path/to/repo --range v1.1.0..v1.2.0          # everything changed between two commits/tags
 secagent scan path/to/repo --all                            # the whole repo, as before
 
 secagent review local path/to/repo --staged
