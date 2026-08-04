@@ -9,7 +9,7 @@ set -eu
 : "${HOME:?HOME must be set}"
 
 # Pinned versions -- bump deliberately, never silently:
-SECAGENT_REF="${SECAGENT_REF:-v0.2.0}"
+SECAGENT_REF="${SECAGENT_REF:-v0.2.1}"
 PI_VERSION="${PI_VERSION:-0.83.0}"
 # Matches the pi version pi/extensions/secrouter-auth.ts was last verified against
 # (see that file's own header) -- bump both together.
