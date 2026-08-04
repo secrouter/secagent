@@ -52,7 +52,10 @@ def enforce(settings: Settings) -> None:
     net = settings.network
     if not net.require_tls and not net.allowed_hosts:
         return  # policy disabled
-    for url in (settings.llm.base_url, settings.gitlab.url):
+    # mattermost.url defaults to "" (unconfigured) -> check_endpoint treats that as
+    # "empty" and passes, so this is a no-op for every deployment that doesn't use
+    # UC101, and real coverage for `chat serve` when it does.
+    for url in (settings.llm.base_url, settings.gitlab.url, settings.mattermost.url):
         ok, reason = check_endpoint(url, net)
         if not ok:
             raise NetworkPolicyError(reason)

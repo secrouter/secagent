@@ -23,6 +23,13 @@ llm:
   #                           redacted by `secagent config`. Set model to whichever
   #                           name SecRouter exposes/routes for that token.
   base_url: "http://localhost:8000/v1"
+  # A literal ("not-needed", a pasted key), OR pi-compatible resolution syntax
+  # (secretval.py): "$ENV_VAR" / "${ENV_VAR}" interpolates an environment variable,
+  # "!command" runs a command and uses its stdout — resolved fresh on EVERY request,
+  # not just once at startup. This is how secagent's own LLM calls (index/scan/
+  # testgen/...) reuse the SecSSO service-token helper pi's models.json also uses:
+  #   api_key: "!secagent token"
+  # See secsso: below and `secagent token --help`.
   api_key: "not-needed"
   model: "gemma-3-12b-it"
   # IMPORTANT: set this to your deployed Gemma variant's real context window.
@@ -33,6 +40,16 @@ llm:
   temperature: 0.2
   # Set false if your llama.cpp build lacks native tool-calling (uses JSON fallback).
   native_tool_calls: true
+
+secsso:                      # OIDC client_credentials for `secagent token` (service identity)
+  token_url: ""               # SecSSO's token endpoint; empty = `secagent token` refuses to run
+                               #   e.g. https://secsso.<domain>/realms/secrouter/protocol/openid-connect/token
+  client_id: "secagent"
+  username: "svc-secagent"    # informational only — never sent as a grant parameter
+  client_secret_env: "SECAGENT_CLIENT_SECRET"   # NAME of the env var holding the secret
+  scope: "openid secrouter"
+  token_cache_path: "~/.secagent/auth/secsso-token.json"   # 0600; not per-repo
+  expiry_buffer_s: 60         # refresh this many seconds before actual expiry
 
 affordances:
   store_dir: ".secagent"
@@ -60,6 +77,16 @@ gitlab:
   webhook_secret: ""   # prefer SECAGENT_GITLAB__WEBHOOK_SECRET (constant-time checked)
   webhook_allowed_ips: []   # CMMC-4: source-IP allow-list ([] = any); pair with mTLS
   poll_interval_s: 0   # >0 enables polling fallback for air-gapped instances
+
+mattermost:                  # UC101: `secagent chat serve` -- own transport, not pi-mattermost
+  url: ""                     # Mattermost server base URL, e.g. https://chat.example.com
+  bot_token: ""                # OUTBOUND: posts replies as the bot; prefer SECAGENT_MATTERMOST__BOT_TOKEN
+  team: ""                     # team name/ID the bot operates in
+  bot_username: "secagent"     # recognized mention prefix; ignores the bot's own posts
+  verify_tls: true
+  webhook_secret: ""           # INBOUND: the `token` Mattermost sends per slash command /
+                                #   outgoing webhook; prefer SECAGENT_MATTERMOST__WEBHOOK_SECRET
+  webhook_allowed_ips: []      # CMMC-4: source-IP allow-list ([] = any); pair with mTLS
 
 persona:
   profile: "config/alignment/default.yaml"

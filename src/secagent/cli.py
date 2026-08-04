@@ -30,12 +30,14 @@ aff_app = typer.Typer(
     help="Affordance queries (bash-callable; the surface the pi agent drives)."
 )
 audit_app = typer.Typer(help="Audit log operations (CMMC-1 / NIST 800-171 AU).")
+chat_app = typer.Typer(help="Use case 101: Mattermost chat-ops front end.")
 app.add_typer(docs_app, name="docs")
 app.add_typer(review_app, name="review")
 app.add_typer(analyze_app, name="analyze")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(aff_app, name="affordance")
 app.add_typer(audit_app, name="audit")
+app.add_typer(chat_app, name="chat")
 
 console = Console()
 
@@ -107,6 +109,41 @@ def show_config(
     """Print the effective configuration (secrets redacted)."""
     settings = _settings(config)
     console.print_json(json.dumps(settings.safe_dict()))
+
+
+@app.command()
+def token(
+    config: str | None = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Print a SecSSO bearer token for secagent's service identity (client_credentials).
+
+    Cached on disk until near expiry (see ``secsso.token_cache_path`` /
+    ``expiry_buffer_s``), so this is cheap to invoke on every request. That is exactly
+    what pi does with a ``models.json`` ``"!command"`` ``apiKey`` — it re-runs the
+    command on every actual LLM call rather than caching the result itself — so a
+    provider configured with ``apiKey: "!secagent token"`` gets a fresh-enough token
+    on every call without ever touching ``models.json`` again. Set
+    ``SECAGENT_LLM__API_KEY="!secagent token"`` to have secagent's OWN LLM calls
+    (index/scan/testgen/...) reuse the identical helper.
+
+    STDOUT on success is exactly the raw token and nothing else — safe to use
+    directly as a credential value. All diagnostics go to stderr; a failure exits
+    non-zero and prints nothing to stdout.
+    """
+    import sys
+
+    from .secsso import SecSSOError, get_token
+
+    settings = _settings(config)
+    try:
+        # Deliberately NOT `console.print`: that goes to stdout with rich styling by
+        # default, and stdout here must be exactly the token — nothing else, no ANSI
+        # escapes — since pi's `!command` resolution and LLMConfig.api_key both use
+        # this output verbatim as a credential.
+        print(get_token(settings.secsso))
+    except SecSSOError as exc:
+        print(f"secagent token: {exc}", file=sys.stderr)
+        raise typer.Exit(code=1) from None
 
 
 @app.command()
@@ -823,6 +860,30 @@ def review_poll(
     state_path = Path(repo or ".") / settings.gitlab.poll_state_file
     poll_open_merge_requests(settings, project, repo=repo, once=once,
                              state_path=state_path)
+
+
+@chat_app.command("serve")
+def chat_serve(
+    config: str | None = typer.Option(None, "--config", "-c"),
+    host: str = typer.Option("0.0.0.0", "--host"),
+    port: int = typer.Option(8070, "--port"),
+    tls_cert: str | None = typer.Option(None, "--tls-cert", help="Server cert (enables HTTPS)"),
+    tls_key: str | None = typer.Option(None, "--tls-key", help="Server private key"),
+    tls_ca: str | None = typer.Option(None, "--tls-ca", help="Client CA (enables mTLS)"),
+) -> None:
+    """Run the Mattermost bot: receive slash commands + outgoing webhooks, route to
+    the review/affordance engines, reply in-thread, audit every interaction.
+
+    secagent's own transport (not the pi-mattermost plugin) — mirrors ``review
+    serve``'s hardening posture exactly: refuses to start without
+    ``mattermost.webhook_secret`` (or an explicit unauthenticated opt-out), and
+    supports the same ``--tls-*`` / mTLS options.
+    """
+    from .chat.webhook import serve
+
+    settings = _settings(config)
+    serve(settings, host=host, port=port,
+          tls_certfile=tls_cert, tls_keyfile=tls_key, tls_ca_certs=tls_ca)
 
 
 @mcp_app.command("affordances")

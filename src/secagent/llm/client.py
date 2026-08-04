@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from ..config import LLMConfig
+from ..secretval import SecretResolutionError, resolve_secret
 
 log = logging.getLogger(__name__)
 
@@ -99,9 +100,15 @@ class LLMClient:
         self._owns_http = http is None
         # base_url MUST end with "/" and request paths MUST be relative (no leading
         # "/"), otherwise httpx drops the base path component (e.g. the "/v1" suffix).
+        #
+        # Authorization is deliberately NOT a fixed header here (contrast the older
+        # behaviour, which baked `Bearer {config.api_key}` in once at construction).
+        # `api_key` may be a `"!command"` (e.g. `"!secagent token"`, resolved per pi's
+        # own `models.json` convention — see `secretval.py` and `secsso.py`) that must
+        # be re-resolved on every request, not cached for the client's lifetime. See
+        # `_auth_headers`, applied per-call in `_post_with_retry`.
         self._http = http or httpx.Client(
             base_url=config.base_url.rstrip("/") + "/",
-            headers={"Authorization": f"Bearer {config.api_key}"},
             timeout=config.request_timeout_s,
             verify=True,  # system OpenSSL / FIPS trust store
         )
@@ -196,6 +203,18 @@ class LLMClient:
                         "llm.max_output_tokens.", payload["max_tokens"])
         return resp
 
+    def _auth_headers(self) -> dict[str, str]:
+        """Resolve ``config.api_key`` fresh (see the ``__init__`` note on why this is
+        not cached) and wrap resolution failures as ``LLMError`` so the existing
+        retry/backoff loop in ``_post_with_retry`` handles them uniformly alongside
+        ordinary transport errors — a transient SecSSO/command hiccup gets the same
+        bounded retries a transient network error would."""
+        try:
+            key = resolve_secret(self.config.api_key)
+        except SecretResolutionError as exc:
+            raise LLMError(f"could not resolve llm.api_key: {exc}") from exc
+        return {"Authorization": f"Bearer {key}"}
+
     def _post_with_retry(self, path: str, payload: dict[str, Any],
                          deadline: float | None = None) -> dict[str, Any]:
         """``deadline`` is an absolute ``time.monotonic()`` instant, shared by every
@@ -209,8 +228,10 @@ class LLMClient:
                     f"LLM deadline exceeded after {attempt} attempt(s): {last_exc}"
                     if last_exc else "LLM deadline exceeded before the request was sent")
             try:
-                resp = (self._http.post(path, json=payload) if remaining is None
-                        else self._http.post(path, json=payload, timeout=remaining))
+                headers = self._auth_headers()
+                resp = (self._http.post(path, json=payload, headers=headers) if remaining is None
+                        else self._http.post(path, json=payload, headers=headers,
+                                             timeout=remaining))
                 if resp.status_code >= 500:
                     raise LLMError(f"server {resp.status_code}: {resp.text[:200]}")
                 resp.raise_for_status()

@@ -74,6 +74,44 @@ class LLMConfig(BaseModel):
         return max(512, usable - self.max_output_tokens)
 
 
+class SecSSOConfig(BaseModel):
+    """OIDC ``client_credentials`` settings for secagent's own service identity against
+    SecSSO (the suite's identity provider). Backs ``secagent token`` / ``secsso.py``.
+
+    Distinct from ``llm.api_key``: this section *produces* a bearer token (for
+    SecRouter, or any other SecSSO-protected endpoint); ``llm.api_key`` (directly, via
+    ``"!secagent token"`` — see ``secretval.py``) or a pi ``models.json`` provider
+    (``apiKey: "!secagent token"``) then *consumes* it.
+    """
+
+    # SecSSO's OIDC token endpoint, e.g. https://secsso.<domain>/realms/secrouter/
+    # protocol/openid-connect/token (Keycloak-style; adjust to your IdP). Empty
+    # refuses to run (secagent token fails loudly rather than guessing an endpoint).
+    token_url: str = ""
+    client_id: str = "secagent"
+    # Informational only: RFC 6749's client_credentials grant carries no
+    # resource-owner identity, so this is never sent as a request parameter. Many
+    # OIDC IdPs (Keycloak service accounts included) still label the resulting
+    # service identity with a username; this documents what SecSSO is expected to
+    # resolve `client_id` to, and is surfaced in error messages for that reason.
+    username: str = "svc-secagent"
+    # NAME of the environment variable holding the client secret — never the secret
+    # itself, and never written to a config file. Set SECAGENT_CLIENT_SECRET (or
+    # point this at a different variable) out of band (secret mount, CI secret, ...).
+    client_secret_env: str = "SECAGENT_CLIENT_SECRET"
+    scope: str = "openid secrouter"
+    # Where `secagent token` caches the fetched token between invocations. pi
+    # re-invokes a models.json "!command" apiKey on every request (see docs/models.md
+    # "Value Resolution"), so without a cache here every LLM call anywhere in the
+    # suite would cost a network round trip to SecSSO. Deliberately NOT under any
+    # repo's .secagent/ store — this is a service identity, not a per-repo artifact —
+    # and written with owner-only (0600) permissions.
+    token_cache_path: str = "~/.secagent/auth/secsso-token.json"
+    # Refresh this many seconds before actual expiry, so a token already in flight to
+    # SecRouter does not expire mid-request.
+    expiry_buffer_s: float = 60.0
+
+
 class GitLabConfig(BaseModel):
     """GitLab connection for the MR review agent (UC100)."""
 
@@ -100,6 +138,37 @@ class GitLabConfig(BaseModel):
     # seen-set held only in memory made every open MR look new and reposted a full public
     # review on every run, forever.
     poll_state_file: str = ".secagent/review-seen.json"
+
+
+class MattermostConfig(BaseModel):
+    """UC101: Mattermost chat-ops front end (``secagent chat serve``).
+
+    secagent's own transport (not the ``pi-mattermost`` plugin): a small FastAPI
+    receiver accepting Mattermost slash-command and outgoing-webhook deliveries,
+    replying in-thread via the REST API as the ``secagent`` bot. Same hardening
+    posture as ``gitlab`` (fail-closed webhook auth, constant-time token compare,
+    optional source-IP allow-list, TLS/mTLS via ``chat serve --tls-*``).
+    """
+
+    # Mattermost server base URL, e.g. https://chat.example.com (no trailing /api/v4).
+    url: str = ""
+    # Bot/personal access token for OUTBOUND REST calls (posting replies). Distinct
+    # from webhook_secret below, which authenticates INBOUND deliveries. Never logged.
+    bot_token: str = ""
+    # Team name/ID the bot operates in (informational; also used to sanity-check an
+    # inbound payload's team_domain/team_id when present).
+    team: str = ""
+    # Recognized mention prefix; also used to ignore the bot's own posts.
+    bot_username: str = "secagent"
+    verify_tls: bool = True
+    # Shared `token` Mattermost sends with every slash-command/outgoing-webhook
+    # delivery. `chat serve` refuses to start if this is empty, unless
+    # webhook_allow_unauthenticated is set — the same fail-closed contract as
+    # gitlab.webhook_secret (a missing/empty secret used to mean "accept everything").
+    webhook_secret: str = ""
+    webhook_allow_unauthenticated: bool = False
+    # Optional source-IP allow-list for the webhook ([] = allow any source).
+    webhook_allowed_ips: list[str] = Field(default_factory=list)
 
 
 class AffordanceConfig(BaseModel):
@@ -581,7 +650,9 @@ class Settings(BaseSettings):
     )
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    secsso: SecSSOConfig = Field(default_factory=SecSSOConfig)
     gitlab: GitLabConfig = Field(default_factory=GitLabConfig)
+    mattermost: MattermostConfig = Field(default_factory=MattermostConfig)
     affordances: AffordanceConfig = Field(default_factory=AffordanceConfig)
     diagrams: DiagramsConfig = Field(default_factory=DiagramsConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
@@ -602,6 +673,12 @@ class Settings(BaseSettings):
             data["gitlab"]["token"] = "***"
         if data.get("gitlab", {}).get("webhook_secret"):
             data["gitlab"]["webhook_secret"] = "***"
+        if data.get("mattermost", {}).get("bot_token"):
+            data["mattermost"]["bot_token"] = "***"
+        if data.get("mattermost", {}).get("webhook_secret"):
+            data["mattermost"]["webhook_secret"] = "***"
+        # secsso holds no secret value itself (client_secret_env is only a variable
+        # NAME — see SecSSOConfig), so there is nothing to redact there.
         return data
 
 
@@ -660,7 +737,9 @@ def _pristine_dump() -> dict[str, Any]:
     return Settings.model_validate(
         {
             "llm": LLMConfig().model_dump(),
+            "secsso": SecSSOConfig().model_dump(),
             "gitlab": GitLabConfig().model_dump(),
+            "mattermost": MattermostConfig().model_dump(),
             "affordances": AffordanceConfig().model_dump(),
             "diagrams": DiagramsConfig().model_dump(),
             "persona": PersonaConfig().model_dump(),

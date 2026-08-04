@@ -168,3 +168,82 @@ def test_the_empty_content_escalation_is_inside_the_same_deadline():
         llm.chat([{"role": "user", "content": "x"}], max_tokens=64, timeout=0.25)
 
     assert calls == [1], "the escalation must not start a new request past the deadline"
+
+
+# -- Authorization header resolution (llm.api_key: literal / $VAR / !command) -------
+#
+# api_key is resolved fresh on every request rather than baked into the client at
+# construction, so a `"!secagent token"` value (see secretval.py / secsso.py) picks up
+# a refreshed token on every call. These tests capture the actual outgoing header to
+# prove that, not just that resolve_secret() works in isolation (covered by
+# test_secretval.py already).
+
+
+def test_auth_header_uses_literal_api_key_by_default():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json=make_chat_response(content="ok"))
+
+    llm = mock_client(handler, api_key="literal-key-123")
+    llm.chat([{"role": "user", "content": "hi"}])
+    assert seen["auth"] == "Bearer literal-key-123"
+
+
+def test_auth_header_resolves_env_var_api_key(monkeypatch):
+    monkeypatch.setenv("SECAGENT_TEST_LLM_KEY", "from-env-456")
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json=make_chat_response(content="ok"))
+
+    llm = mock_client(handler, api_key="$SECAGENT_TEST_LLM_KEY")
+    llm.chat([{"role": "user", "content": "hi"}])
+    assert seen["auth"] == "Bearer from-env-456"
+
+
+def test_auth_header_resolves_command_api_key():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json=make_chat_response(content="ok"))
+
+    llm = mock_client(handler, api_key="!echo from-command-789")
+    llm.chat([{"role": "user", "content": "hi"}])
+    assert seen["auth"] == "Bearer from-command-789"
+
+
+def test_auth_header_resolution_failure_raises_llmerror():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must not reach the network when api_key is unresolvable")
+
+    llm = mock_client(handler, api_key="$SECAGENT_TEST_LLM_KEY_DEFINITELY_UNSET", max_retries=1)
+    with pytest.raises(LLMError, match="could not resolve llm.api_key"):
+        llm.chat([{"role": "user", "content": "hi"}])
+
+
+def test_auth_header_is_re_resolved_on_every_request_not_cached_at_construction(tmp_path):
+    """Proves resolution happens per `chat()` call rather than once in __init__: a
+    command whose output changes between invocations must produce a different header
+    on a second call against the SAME LLMClient instance."""
+    counter_file = tmp_path / "counter"
+    counter_file.write_text("0")
+    # POSIX shell one-liner: read, increment, print, persist.
+    command = (
+        f"!n=$(cat {counter_file}); n=$((n + 1)); "
+        f"echo $n > {counter_file}; printf 'token-%s' \"$n\""
+    )
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("authorization"))
+        return httpx.Response(200, json=make_chat_response(content="ok"))
+
+    llm = mock_client(handler, api_key=command)
+    llm.chat([{"role": "user", "content": "first"}])
+    llm.chat([{"role": "user", "content": "second"}])
+
+    assert seen == ["Bearer token-1", "Bearer token-2"]

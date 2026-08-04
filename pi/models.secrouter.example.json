@@ -1,0 +1,36 @@
+{
+  "_comment": [
+    "Example ~/.pi/agent/models.json wiring the 'secrouter' provider that",
+    "pi/extensions/secrouter-auth.ts registers. That extension owns the OAuth login",
+    "(SecSSO device-code flow, per-user); THIS file owns the deployment-specific",
+    "baseUrl + model catalog, the same split models.md documents for Ollama/vLLM.",
+    "",
+    "Usage:",
+    "  export SECROUTER_SSO_DEVICE_URL=https://secsso.<domain>/realms/secrouter/protocol/openid-connect/auth/device",
+    "  export SECROUTER_SSO_TOKEN_URL=https://secsso.<domain>/realms/secrouter/protocol/openid-connect/token",
+    "  pi --extension ./pi/extensions/secrouter-auth.ts",
+    "  /login secrouter        # SecSSO device-code login -- YOUR OWN token is used,",
+    "                          # not a shared/static key. pi stores + refreshes it in",
+    "                          # ~/.pi/agent/auth.json (0600) automatically.",
+    "  /model                  # pick a secrouter/<id> model",
+    "",
+    "oauth is intentionally NOT set on the provider entry below -- custom OAuth flows",
+    "only work via pi.registerProvider() in an extension, never as a models.json",
+    "literal (the only literal models.json accepts there is \"radius\", pi.dev's own",
+    "hosted gateway -- unrelated to SecRouter). See docs/models.md 'Value Resolution'",
+    "and 'Provider Configuration' for the full rules this file follows.",
+    "",
+    "KIMI GUARD: this file registers ONLY the 'secrouter' provider. It does not",
+    "enable, override, or reference pi's built-in 'Kimi For Coding' provider",
+    "(PRC jurisdiction -- excluded from this suite's model defaults)."
+  ],
+  "providers": {
+    "secrouter": {
+      "baseUrl": "https://secrouter.<domain>:47002/v1",
+      "models": [
+        { "id": "gemma-3-12b-it", "name": "Gemma 3 12B (SecRouter)", "contextWindow": 131072 },
+        { "id": "gemma-3-4b-it", "name": "Gemma 3 4B (SecRouter)", "contextWindow": 131072 }
+      ]
+    }
+  }
+}

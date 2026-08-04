@@ -46,6 +46,42 @@ If you'd rather not use the extension, the **Skill** in `skills/secagent/SKILL.m
 pi use the same capabilities through its bash tool + this README — no TypeScript
 needed. (pi has no built-in MCP; Skills/extensions are the integration path.)
 
+## 3b. Point pi at SecRouter — per-user login
+
+`pi/extensions/secrouter-auth.ts` registers a `secrouter` provider whose `/login`
+drives SecSSO's OIDC **device-authorization** flow, so each developer authenticates
+as themselves rather than sharing a static key. pi stores + auto-refreshes the
+resulting tokens in `~/.pi/agent/auth.json` (0600); this extension only implements
+the SecSSO REST calls.
+
+```bash
+export SECROUTER_SSO_DEVICE_URL=https://secsso.<domain>/realms/secrouter/protocol/openid-connect/auth/device
+export SECROUTER_SSO_TOKEN_URL=https://secsso.<domain>/realms/secrouter/protocol/openid-connect/token
+pi --extension ./pi/extensions/secrouter-auth.ts
+```
+```
+/login secrouter    # device code shown in-terminal; approve it in a browser
+/model               # pick a secrouter/<id> model
+```
+
+Copy `pi/models.secrouter.example.json` to `~/.pi/agent/models.json` (or merge it
+alongside another provider's entry) to set the deployment's real `baseUrl` — see
+`https://secrouter.<domain>:47002/v1` — and the model catalog; the extension supplies
+only the OAuth flow, not the models list (same split `docs/models.md` documents for
+Ollama/vLLM). This is the per-user counterpart to `secagent token`
+({doc}`../docs/configuration` "Inference at SecRouter"), which is a *service* identity
+(OIDC client_credentials) for automated/headless calls — same SecSSO IdP, two
+different grants for two different kinds of caller.
+
+```{note}
+Verified against `@earendil-works/pi-coding-agent@0.83.0` / `@earendil-works/pi-ai@0.83.0`
+(`pi.registerProvider`'s `oauth` field and the `OAuthLoginCallbacks`/`OAuthCredentials`
+shapes), since pi itself was not installed in the environment this was written in — see
+the file's own header comment for exactly what was cross-checked. Re-verify against
+whatever pi version is actually deployed, the same caveat `pi/extensions/secagent.ts`
+already carries for its own (unrelated) API surface.
+```
+
 ## 4. The use cases
 
 **Full analysis (UC0).** Drop pi into an unfamiliar project and have it bin the

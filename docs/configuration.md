@@ -158,6 +158,73 @@ gitlab:
   poll_interval_s: 0          # >0 enables the polling fallback (air-gapped)
 ```
 
+### `secsso`
+
+OIDC `client_credentials` settings for `secagent token` (`secagent`'s own SERVICE
+identity against SecSSO, the suite's identity provider) — see {doc}`configuration`
+"Inference at SecRouter" above and `src/secagent/secsso.py`.
+
+```yaml
+secsso:
+  token_url: ""                # SecSSO's OIDC token endpoint; empty = `secagent token` refuses to run
+  client_id: "secagent"
+  username: "svc-secagent"     # informational only -- never sent as a grant parameter
+  client_secret_env: "SECAGENT_CLIENT_SECRET"   # NAME of the env var holding the secret
+  scope: "openid secrouter"
+  token_cache_path: "~/.secagent/auth/secsso-token.json"   # 0600; not per-repo
+  expiry_buffer_s: 60          # refresh this many seconds before actual expiry
+```
+
+```bash
+secagent token                 # prints a fresh (or cached) bearer token to stdout
+```
+
+`secagent token` caches the fetched token on disk (`token_cache_path`) so it is cheap
+to invoke on every request — which is exactly how pi re-invokes a `models.json`
+`"!command"` `apiKey` (see `pi/docs/models.md` "Value Resolution"): once per actual LLM
+call, not once at startup. Point both pi and secagent's own `llm.api_key` at the same
+helper:
+
+```yaml
+llm:
+  api_key: "!secagent token"   # or in a pi models.json provider: "apiKey": "!secagent token"
+```
+
+`llm.api_key` supports the identical literal / `$ENV_VAR` / `"!command"` resolution
+syntax pi does (`src/secagent/secretval.py`), resolved fresh on every LLM request —
+not cached at client construction — so a refreshing `"!command"` value stays current.
+
+### `mattermost`
+
+UC101: `secagent chat serve`, secagent's own transport (not the `pi-mattermost`
+plugin) for Mattermost slash commands and outgoing webhooks. Same hardening posture
+as `gitlab`: `chat serve` refuses to start without `webhook_secret` (or an explicit
+`webhook_allow_unauthenticated` opt-out), and supports the same `--tls-*` / mTLS
+options as `review serve`.
+
+```yaml
+mattermost:
+  url: ""                      # Mattermost server base URL, e.g. https://chat.example.com
+  bot_token: ""                # OUTBOUND: posts replies as the bot (prefer SECAGENT_MATTERMOST__BOT_TOKEN)
+  team: ""                     # team name/ID the bot operates in
+  bot_username: "secagent"     # recognized mention prefix; ignores the bot's own posts
+  verify_tls: true
+  webhook_secret: ""           # INBOUND: the `token` Mattermost sends per slash command/webhook
+  webhook_allowed_ips: []      # CMMC-4: source-IP allow-list ([] = any); pair with mTLS
+```
+
+```bash
+secagent chat serve --port 8070
+```
+
+`bot_token` and `webhook_secret` are two DIFFERENT secrets: `bot_token` authenticates
+secagent's own outbound REST calls to Mattermost (posting the reply); `webhook_secret`
+authenticates Mattermost's inbound deliveries to secagent (the shared `token` field
+Mattermost sends with every slash-command/outgoing-webhook POST). Every chat
+interaction is recorded via `AuditLogger.record_chat` with the invoking Mattermost
+user as `end_user` — distinct from the bot's own service `principal` — see `audit`
+below.
+
 ### `persona`
 
 Points at the review persona profile (alignment + verbosity). See {doc}`use-cases`.

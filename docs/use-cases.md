@@ -657,23 +657,44 @@ stance.
 
 ## UC101 — Mattermost interaction
 
-Drive SecAgent from a Mattermost channel: mention the bot to kick off a review or an
-analysis and it replies in-thread with the result — the same engines as UC100/UC0,
-reachable from chat. This is the chat-ops front end for teams running **SecChat**
-(Mattermost) in the suite; it connects through the `@whonixnetworks/pi-mattermost` plugin.
+Drive SecAgent from a Mattermost channel: mention the bot (or use a slash command) to
+kick off a review or an affordance query, and it replies in-thread with the result —
+the same engines as UC100/UC0, reachable from chat. **secagent's own transport** — a
+small FastAPI receiver for Mattermost slash-command and outgoing-webhook deliveries —
+not the `pi-mattermost` plugin.
 
 ```bash
-# (lands with SecChat) receive Mattermost bot events and dispatch to a use case
-secagent chat serve --port 8070
+secagent chat serve --port 8070   # receives Mattermost events, dispatches, replies
 ```
 
-Setup (planned): register a Mattermost bot account, install the `pi-mattermost` plugin in
-SecChat, and point it at SecAgent. Mentions like `@secagent review group/project 42` or
-`@secagent analyze <repo>` map to the matching use case; results post back in-thread.
+Setup: register a Mattermost bot account (its token is `mattermost.bot_token`), then
+configure **either** a custom slash command (works in any channel, including DMs with
+the bot) **or** an outgoing webhook (trigger word, e.g. `@secagent`, scoped to a
+channel) pointing at `https://<host>:8070/webhook`, with the request token matching
+`mattermost.webhook_secret`. Both deliveries carry the invoking user's identity
+(`user_id`/`user_name`) directly in the payload.
 
-**Hardening.** Same posture as UC100: the bot token and the plugin shared secret are
-required (fail-closed), callers can be restricted, traffic runs over TLS/mTLS, and every
-chat-triggered action goes through the same audit trail as the CLI.
+```
+/secagent review mygroup/myproject 42     # slash command
+@secagent structure /path/to/repo         # outgoing webhook (trigger word)
+```
 
-> **Status:** integration scaffold. The chat transport lands with **SecChat** (Mattermost
-> + `pi-mattermost`); the engines it calls (UC0, UC100) are already here.
+`review <project> <mr_iid>` generates a UC100 review and replies with it directly
+(without also posting to GitLab — the chat reply *is* the delivery for that
+invocation). `structure <repo-path>` returns the UC1 affordance structure outline.
+`help` lists commands.
+
+**Hardening.** Same posture as UC100: `chat serve` refuses to start without
+`mattermost.webhook_secret` (fail-closed, matching `review serve`'s
+`gitlab.webhook_secret` contract exactly), an optional source-IP allow-list
+(`mattermost.webhook_allowed_ips`), and TLS/mTLS via `--tls-cert`/`--tls-key`/`--tls-ca`.
+Every chat-triggered action is recorded via `AuditLogger.record_chat` — see
+{doc}`configuration` "audit" — carrying the invoking Mattermost user as `end_user`
+(distinct from the bot's own service `principal`), the channel/thread, and either a
+SHA-256 digest or (when `audit.capture_content=true`) the verbatim message/reply, the
+same tamper-evident hash chain as every other audit record.
+
+> **Status:** implemented — `secagent chat serve` is secagent's own transport, not
+> dependent on **SecChat** or `pi-mattermost`. Currently routes `review` (UC100) and
+> `structure` (UC1 affordances); wiring in more use-case verbs (`scan`, `analyze`,
+> `testgen`) is straightforward follow-on work in `chat/router.py`, not a redesign.

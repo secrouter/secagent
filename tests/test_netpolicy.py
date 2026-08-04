@@ -53,3 +53,22 @@ def test_enforce_passes_for_https_and_loopback():
     s.llm.base_url = "http://localhost:8000/v1"   # loopback exempt
     s.gitlab.url = "https://gitlab.internal"
     enforce(s)  # should not raise
+
+
+def test_enforce_covers_mattermost_url():
+    s = Settings()
+    s.network.require_tls = True
+    s.llm.base_url = "https://gemma.internal/v1"
+    s.gitlab.url = "https://gitlab.internal"
+    s.mattermost.url = "http://chat.internal"  # plaintext, not loopback
+    with pytest.raises(NetworkPolicyError):
+        enforce(s)
+
+
+def test_enforce_ignores_unconfigured_mattermost_url():
+    s = Settings()
+    s.network.require_tls = True
+    s.llm.base_url = "https://gemma.internal/v1"
+    s.gitlab.url = "https://gitlab.internal"
+    # mattermost.url left at its "" default (UC101 unused) must not trip the policy.
+    enforce(s)  # should not raise

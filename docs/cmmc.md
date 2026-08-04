@@ -68,9 +68,9 @@ service-account tokens.
 |----------|---------------------------|--------|-------|
 | AC.L2-3.1.1 | Limit system access to authorized users/processes | 🏛 / 🟡 | Host/IdP enforce who runs secagent. The GitLab token scopes what the agent can do. |
 | AC.L2-3.1.2 | Limit access to permitted transactions/functions | 🟡 | Scope the GitLab token to the minimum (api/read+note); the LLM endpoint should be reachable only from secagent. |
-| AC.L2-3.1.3 | Control flow of CUI | ✅ 🟡 | Egress is limited to the configured LLM + GitLab endpoints (no telemetry). `network.allowed_hosts` adds an in-tool egress allow-list and `network.require_tls` refuses plaintext (CMMC-3, implemented); defense-in-depth at the network layer still recommended. |
+| AC.L2-3.1.3 | Control flow of CUI | ✅ 🟡 | Egress is limited to the configured LLM + GitLab + Mattermost endpoints (no telemetry). `network.allowed_hosts` adds an in-tool egress allow-list and `network.require_tls` refuses plaintext (CMMC-3, implemented; covers `mattermost.url` too); defense-in-depth at the network layer still recommended. |
 | AC.L2-3.1.5 | Least privilege | ✅ / 🟡 | Container runs as a non-root UID; extras are opt-in (`docs`/`review`). Use a least-privilege GitLab token. |
-| AC.L2-3.1.12 | Monitor/control remote access (review webhook) | ✅ 🟡 | Constant-time `X-Gitlab-Token` check, optional `webhook_allowed_ips`, and TLS/**mTLS** via `review serve --tls-cert/--tls-key/--tls-ca` (CMMC-4). |
+| AC.L2-3.1.12 | Monitor/control remote access (review + chat webhooks) | ✅ 🟡 | Constant-time shared-token check (`X-Gitlab-Token` / Mattermost `token`), optional `webhook_allowed_ips`, and TLS/**mTLS** via `review serve` / `chat serve --tls-cert/--tls-key/--tls-ca` (CMMC-4). |
 | AC.L2-3.1.20 | Control connections to external systems | 🟡 | All external endpoints are explicit config; keep them in-boundary. |
 | AC.L2-3.1.22 | Control publicly-posted content | 🟡 | The reviewer posts to GitLab MRs; comments are signed and persona-limited. Restrict the bot to private projects. |
 | AC.L2-3.1.4/3.1.6-3.1.11, 3.1.13-3.1.19, 3.1.21 | Separation of duties, session lock, MFA-gated remote, mobile/wireless, etc. | 🏛 | Environment/IdP responsibilities; not applicable to the tool. |
