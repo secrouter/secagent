@@ -33,11 +33,16 @@ and stops if it can't find one — it will **not** install Python for you.
 `uv` is installed by `install.sh` itself if you don't already have it — no need to get
 it first. On Apple Silicon everything is native `arm64`; no Rosetta.
 
-From a bare machine, that's just:
+From an absolutely clean Mac, that's:
 
 ```bash
-xcode-select --install            # skip if you've compiled anything before
-brew install python@3.13 node     # 'node' is optional — only pi needs it
+xcode-select --install                      # Command Line Tools (compiler, git)
+
+# Homebrew, if you don't already have it (https://brew.sh):
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+eval "$(/opt/homebrew/bin/brew shellenv)"   # put brew on PATH (Apple Silicon)
+
+brew install python@3.13 node               # Python 3.11+ (required); node optional (pi)
 ```
 
 Then run the install below.
