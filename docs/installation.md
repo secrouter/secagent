@@ -1,16 +1,213 @@
-# Installation
+# Developer quickstart (macOS / Linux)
 
-secagent is the Python toolset; [pi](https://pi.dev) is the agent runtime that drives
-it. Install both.
+This page is for an individual developer putting secagent on their **own** Mac or
+Linux machine, to use against an **existing SecRouter deployment**, authenticated as
+**themselves**. One command installs the tools; two more commands finish setup:
 
-## Python toolset
+```bash
+./install.sh                              # 1. install secagent (+ pi, if Node is present)
+secagent init --domain <your-suite-domain>  # 2. wire up pi + secagent for that deployment
+secagent login                              # 3. authenticate as yourself
+```
 
-**Requires Python 3.11+.** secagent is not yet published to PyPI, so install it from
-source ([below](#from-source)). Note that the default `python3` on macOS is often an
-older system build (e.g. 3.9); use an explicit `python3.11` (or newer) interpreter, or
-`make`, which resolves a suitable one.
+No root, no `systemd`, nothing written outside your home directory. If you're
+deploying secagent as a shared, unattended **service** instead (a bot account, a
+GitLab-review webhook, a chat-ops server) see [How this differs from a SecDeploy
+install](#how-this-differs-from-a-secdeploy-service-install) below — that path is
+different from this one.
 
-Extras:
+## 1. Install
+
+```bash
+git clone https://github.com/secrouter/secagent
+cd secagent
+./install.sh
+```
+
+(Once this repo is public, the equivalent one-liner is
+`curl -fsSL https://raw.githubusercontent.com/secrouter/secagent/main/install.sh | sh`
+— `install.sh` itself never assumes it was cloned first, so either form works.)
+
+`install.sh` is POSIX `sh`, idempotent, and never needs root. It:
+
+1. Detects your OS/arch (macOS or Linux only).
+2. Looks for **Python 3.11+**. If it can't find one, it prints OS-specific install
+   guidance and stops — it never tries to install Python for you.
+3. Installs [`uv`](https://docs.astral.sh/uv/) if it isn't already on your PATH (via
+   uv's official installer, falling back to `pipx`/`pip` if `curl`/`wget` aren't
+   available).
+4. Installs `secagent` itself with `uv tool install`, from a pinned git ref, so
+   `secagent` lands on your PATH.
+5. If `npm` is present, installs **pi** (the agent runtime — see below) at a pinned
+   version. If `npm` isn't present, it prints guidance and continues anyway: pi is
+   optional.
+
+Re-run it any time — every step is safe to repeat.
+
+```{note}
+`SECAGENT_REF` and `PI_VERSION` at the top of `install.sh` pin exactly what gets
+installed. Override them in your environment (`SECAGENT_REF=v0.2.0 ./install.sh`) to
+install something other than the script's default.
+```
+
+## 2. Point secagent (and pi) at your SecRouter deployment
+
+```bash
+secagent init --domain <your-suite-domain>
+```
+
+By suite convention, `--domain` alone derives every URL secagent needs:
+
+| peer | derived from `--domain sec.internal` |
+|---|---|
+| SecRouter (LLM gateway) | `https://secrouter.sec.internal:47002/v1` |
+| SecSSO device authorization endpoint | `https://secsso.sec.internal:9000/application/o/device/` |
+| SecSSO token endpoint | `https://secsso.sec.internal:9000/application/o/token/` |
+
+If your deployment doesn't follow that convention, override the pieces you need with
+`--secrouter-url <full base URL, incl. /v1>` and/or `--secsso-url <base URL, no
+path>` — either may be combined with `--domain` to override just one peer.
+
+`secagent init` writes two files, and **only** these two files:
+
+- **`~/.pi/agent/models.json`** — registers a single `secrouter` provider for pi (see
+  [pi is optional](#pi-is-optional) below). `--model` (default `balanced`, a
+  SecRouter-side routing tier) picks which model id is registered; pass a different
+  id/tier if your deployment exposes one you'd rather use.
+- **`~/.secagent/config.yaml`** — a per-user config layer, auto-loaded by every later
+  `secagent` invocation (see {doc}`configuration`'s precedence list), so secagent's
+  *own* use cases (`secagent index`, `secagent scan`, `secagent docs build`, ...) also
+  run against SecRouter as you, with nothing to `export` by hand.
+
+Both use `!secagent token --user` as the credential — never a literal secret (see
+[Per-user identity](#per-user-identity-secagent-token---user) below). Re-running
+`secagent init` is safe: it only ever touches the `secrouter` key of `models.json` and
+the `llm`/`secsso` sections of `config.yaml`, so anything else you've added to either
+file by hand (another pi provider, another secagent config section) survives. Pass
+`--force` to additionally back up the previous version of each file before writing
+(`models.json.bak-<timestamp>`, alongside the original).
+
+## 3. Authenticate as yourself
+
+```bash
+secagent login
+```
+
+This runs an OIDC **device authorization** flow (RFC 8628) against SecSSO — the same
+kind of flow `gh auth login`/`az login` use. It prints a verification URL and a short
+code:
+
+```text
+Sign in to SecSSO to continue:
+  https://secsso.sec.internal:9000/if/device/
+  (or open https://secsso.sec.internal:9000/if/device/ and enter code: ABCD-1234)
+Waiting for approval...
+```
+
+Open that URL in **any** browser — this machine, your phone, doesn't matter — sign in
+with your own SecSSO identity, and approve. `secagent login` polls until you do, then
+caches the result at `~/.secagent/auth/user-token.json` (mode `0600`, directory
+`0700`), refreshing it automatically before it expires. Re-run `secagent login` any
+time; it always re-authenticates.
+
+```bash
+secagent logout   # deletes the cached token
+```
+
+## Per-user identity: `secagent token --user`
+
+Everything above exists to make ONE thing true: there is a single, per-user token
+source, and both secagent and pi read *the same one*.
+
+```bash
+secagent token --user   # prints your cached SecSSO token (refreshing it if needed)
+```
+
+This is the exact per-user mirror of the service identity's `secagent token`
+(client-credentials — see {doc}`configuration`'s "Inference at SecRouter" section):
+same shape, same caching discipline, but backed by *your* OIDC login instead of a
+shared client secret. `secagent init` wires both consumers to invoke it as a command,
+resolved fresh on every call (never stored):
+
+- pi's `models.json`: `"apiKey": "!secagent token --user"`
+- secagent's own config: `SECAGENT_LLM__API_KEY=!secagent token --user` (in
+  `~/.secagent/config.yaml`)
+
+If you ever need the raw token for something else (curling SecRouter directly, say),
+`secagent token --user` is exactly that: stdout is the token and nothing else on
+success, so it's safe to use directly (`curl -H "Authorization: Bearer $(secagent
+token --user)" ...`). Without `--user` it prints the *service* token instead —
+unchanged from before this feature existed.
+
+## pi is optional
+
+[pi](https://pi.dev) is the agent *runtime* — the TypeScript coding agent that owns
+the loop, tools, and sessions, and that `secagent init` configures a `secrouter`
+provider for. secagent's own CLI (`secagent index`/`scan`/`docs build`/`review`/...)
+never depends on pi being installed at all: every command above works with `pi`
+missing.
+
+If `install.sh` found `npm`, pi is already installed and configured — run it and
+select the model `secagent init` registered:
+
+```bash
+pi --provider secrouter
+```
+
+If you skipped pi (no Node, or you just don't want it), nothing above breaks; install
+Node + `npm install -g @earendil-works/pi-coding-agent` later and re-run `secagent
+init` to wire it up retroactively. `secagent doctor` reports pi's (and Node's) status
+either way, always as a warning, never a failure.
+
+```{note}
+`secagent init`'s `models.json` does **not** depend on
+`pi/extensions/secrouter-auth.ts`, a separate pi-native extension that drives the same
+device-code flow *inside* pi's own `/login` command and stores the result in pi's
+`auth.json` instead. That extension is still there and still works if you'd rather
+integrate at the pi level directly (see `pi/README.md` "3b. Point pi at SecRouter") —
+it's just not what the default onboarding here uses, so pi stays optional and secagent
+never has to know anything about pi's `auth.json` schema.
+```
+
+## Verify
+
+```bash
+secagent doctor            # Python/secagent/pi/Node versions, init done?, logged in?
+secagent doctor --probe    # + best-effort reachability of SecRouter and SecSSO
+secagent doctor --fix      # pre-create + harden (0700) the token-cache directory
+```
+
+`doctor` never fails on a missing `pi`/Node or a not-yet-completed `init`/`login` —
+those are warnings, since plenty of legitimate secagent use needs neither (e.g. CI).
+It fails only on a real blocker (an unsupported Python version, a broken FIPS/audit
+posture, ...).
+
+(how-this-differs-from-a-secdeploy-service-install)=
+## How this differs from a SecDeploy/service install
+
+This page is about **one person, one laptop**: no root, no `systemd`, everything
+under your `$HOME`, and every request carries *your own* identity because you ran
+`secagent login`.
+
+A SecDeploy-managed install (see `secdeploy`'s `fedora-fips` target) is the opposite
+shape: secagent runs as an unattended **service** — `secagent chat serve`, `secagent
+review serve` — under a dedicated service account (`svc-secagent`), installed to
+`/etc/secsuite/` on a managed host, with `SECAGENT_LLM__API_KEY=!secagent token`
+(**no** `--user`: the client-credentials service identity, a shared secret provisioned
+out of band, never an interactive login). There is no `secagent login` step in that
+path at all — a bot has no browser to approve a device code in, and shouldn't have one
+requested on its behalf.
+
+Both paths end up calling the same SecRouter, through the same kind of
+`!secagent token[...]` indirection, and both are documented in
+{doc}`configuration` ("Inference at SecRouter" / the `secsso` section) — they're two
+different *identities* for two different *callers*, not two different products.
+
+## Optional extras
+
+The extras below are unrelated to onboarding and install with `pip install
+"secagent[...]"` (or add `--with <extra>` args to the `uv tool install` in
+`install.sh` if you want them from the start):
 
 `docs`
 : Sphinx + `sphinxcontrib-drawio` for the documentation deep-dive (UC1).
@@ -37,39 +234,30 @@ Extras:
   the trait/impl graph, the heavy rust-analyzer backend runs in an optional container
   (`make analyzer-rust`); see {doc}`design/heavy-analysis-pipeline`.
 
-`dev`
-: ruff, mypy, pytest for development.
+## Contributing to secagent itself
 
-### From source
+The steps above install secagent as a *user*. To work on secagent's own source:
 
 ```bash
 git clone https://github.com/secrouter/secagent
 cd secagent
-make dev             # editable install with all extras (uses Python 3.11+)
+make dev             # editable install with all extras (needs Python 3.11+)
 make verify          # ruff + mypy + pytest + secagent doctor
 ```
 
-`make dev` runs the editable install with a suitable interpreter. To install without
-`make`, point pip at Python 3.11+ explicitly — a virtualenv keeps it isolated:
+`make dev` picks a suitable interpreter automatically (handy since the default
+`python3` on macOS is often an older system build, e.g. 3.9). Without `make`, point
+pip at Python 3.11+ yourself — a virtualenv keeps it isolated:
 
 ```bash
 python3.11 -m venv .venv && . .venv/bin/activate
 pip install -e ".[docs,review,tokenizer,clang,csharp,dev]"
 ```
 
-## pi (the agent runtime)
+## A local model endpoint (no SecRouter yet?)
 
-```bash
-npm install -g @earendil-works/pi-coding-agent   # or: curl -fsSL https://pi.dev/install | sh
-```
-
-See {doc}`pi` for loading the secagent extension and pointing pi at a local Gemma
-model.
-
-## A local model endpoint
-
-secagent and pi both talk to any OpenAI-compatible endpoint — no model server is
-bundled:
+If you don't have a SecRouter deployment to point at, secagent and pi both talk to
+any OpenAI-compatible endpoint directly — no model server is bundled:
 
 ```bash
 # llama.cpp
@@ -78,12 +266,8 @@ llama-server -m gemma-3-12b-it-Q4_K_M.gguf --host 0.0.0.0 --port 8000
 vllm serve google/gemma-3-12b-it --port 8000
 ```
 
-## Verify
-
-```bash
-secagent doctor          # FIPS + dependency self-check
-secagent doctor --probe  # also probes the configured LLM endpoint
-```
+then point `SECAGENT_LLM__BASE_URL` (or `~/.secagent/config.yaml`'s `llm.base_url`) at
+it instead of running `secagent init`. See {doc}`configuration`.
 
 ## Drawio rendering (optional)
 

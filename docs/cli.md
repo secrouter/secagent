@@ -7,12 +7,22 @@ or `secagent <command> --help` for the authoritative, version-specific listing.
 
 ```text
 secagent version                 # print the version
-secagent doctor [--probe]        # FIPS + dependency self-checks (--probe hits the endpoint)
+secagent doctor [--probe] [--fix]  # FIPS + dependency + onboarding self-checks
 secagent config                  # print effective config (secrets redacted)
+secagent init --domain <domain> [--secrouter-url U] [--secsso-url U] [--model M] [--force]
+                               # developer onboarding: wire pi + secagent at SecRouter
+secagent login                   # authenticate as yourself (OIDC device authorization)
+secagent logout                  # delete the cached per-user token
+secagent token [--user]          # print a bearer token: service identity, or --user for your own
 secagent index <repo> [--no-llm] [--refresh] [--refresh-summaries] [-v]
                                # build/update the affordance store
 secagent purge <repo> [--yes]    # securely delete a repo's affordance store (CMMC-2)
 ```
+
+`init`/`login`/`logout`/`token --user` are the developer-onboarding surface — see
+{doc}`installation`'s quickstart for the full walkthrough. `doctor --probe` also
+best-effort-probes SecRouter's `/v1/models` and SecSSO's device/token endpoints;
+`doctor --fix` pre-creates and hardens (`0700`) the token-cache directory.
 
 `-v/--verbose` streams progress to **stderr** — scan/summarize counts, the clang
 parse (per-file function tallies), and the map-building phases — so a long run shows

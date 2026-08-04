@@ -41,15 +41,25 @@ llm:
   # Set false if your llama.cpp build lacks native tool-calling (uses JSON fallback).
   native_tool_calls: true
 
-secsso:                      # OIDC client_credentials for `secagent token` (service identity)
-  token_url: ""               # SecSSO's token endpoint; empty = `secagent token` refuses to run
-                               #   e.g. https://secsso.<domain>/realms/secrouter/protocol/openid-connect/token
+secsso:                      # OIDC settings for secagent's TWO SecSSO identities
+  # -- service identity ("secagent token"; client_credentials) --
+  token_url: ""               # SecSSO's token endpoint; empty = `secagent token`/`--user` refuse to run
+                               #   e.g. https://secsso.<domain>:9000/application/o/token/
   client_id: "secagent"
   username: "svc-secagent"    # informational only — never sent as a grant parameter
   client_secret_env: "SECAGENT_CLIENT_SECRET"   # NAME of the env var holding the secret
   scope: "openid secrouter"
   token_cache_path: "~/.secagent/auth/secsso-token.json"   # 0600; not per-repo
-  expiry_buffer_s: 60         # refresh this many seconds before actual expiry
+  expiry_buffer_s: 60         # refresh this many seconds before actual expiry; shared by both identities
+
+  # -- per-user identity ("secagent login" / "secagent token --user"; device auth,
+  #    RFC 8628) -- normally set by `secagent init --domain ...`, not by hand; see
+  #    docs/installation.md's developer quickstart.
+  device_authorization_url: ""       # SecSSO's device_authorization endpoint; empty = `secagent login` refuses to run
+                                      #   e.g. https://secsso.<domain>:9000/application/o/device/
+  device_client_id: "secagent-pi"    # PUBLIC client — no secret
+  device_scope: "openid profile email secrouter"
+  user_token_cache_path: "~/.secagent/auth/user-token.json"   # 0600; separate from token_cache_path above
 
 affordances:
   store_dir: ".secagent"

@@ -7,18 +7,24 @@ and probes the configured LLM endpoint and the Draw.io toolchain.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import os
 import re
 import shutil
+import subprocess
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
 
 from .config import Settings
+from .secretval import SecretResolutionError, resolve_secret
 from .security import (
     FORBIDDEN_HASHES,
+    harden_path,
     openssl_fips_enabled,
     openssl_version,
 )
@@ -143,6 +149,185 @@ def check_docs_extra() -> Check:
     )
 
 
+# ── Developer onboarding (install.sh / secagent init / secagent login) ─────────────
+#
+# The checks below report the state of the ONE-COMMAND-INSTALL + TWO-COMMAND-SETUP
+# flow (see docs/installation.md): is the runtime new enough, is pi/Node present (both
+# optional — pi is a separate, optional agent runtime), has `secagent init` run, and
+# is the developer actually logged in. None of these are FIPS/security gates, so
+# (aside from the Python floor) they warn rather than fail.
+
+
+def check_python_version() -> Check:
+    v = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    # Suppressing ruff's UP036 deliberately: it assumes this comparison is dead code
+    # because pyproject.toml already declares requires-python = ">=3.11" -- but that
+    # metadata is exactly what this RUNTIME check exists to verify actually held (a
+    # stale venv, a misconfigured PATH, or `install.sh` picking the wrong interpreter
+    # can all still run secagent under something older).
+    if sys.version_info >= (3, 11):  # noqa: UP036
+        return Check("python_version", True, f"Python {v}", severity="info")
+    return Check("python_version", False,
+                 f"Python {v} — secagent requires >=3.11 (see install.sh / "
+                 "docs/installation.md)")
+
+
+def check_secagent_version() -> Check:
+    from . import __version__
+
+    return Check("secagent_version", True, f"secagent {__version__}", severity="info")
+
+
+def _binary_version(binary: str, flag: str) -> str:
+    """Best-effort ``<binary> <flag>`` output, first non-empty line. Empty string on
+    any failure — never raises, since this is purely cosmetic (doctor still reports
+    the binary as *present* from `shutil.which` alone)."""
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed binary from shutil.which, fixed flag
+            [binary, flag], capture_output=True, text=True, timeout=5.0, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    for line in (result.stdout or result.stderr or "").splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def check_pi_runtime() -> Check:
+    """pi (pi.dev) is OPTIONAL for secagent's own CLI — only `secagent init` wires it
+    up, for a developer who wants it as their agent runtime. A missing `pi` never
+    fails doctor, only warns; see docs/installation.md."""
+    binary = shutil.which("pi")
+    if not binary:
+        return Check("pi_runtime", True,
+                     "pi not found on PATH (optional — see docs/installation.md)",
+                     severity="warn")
+    version = _binary_version(binary, "--version")
+    detail = f"found {binary}" + (f" ({version})" if version else "")
+    return Check("pi_runtime", True, detail, severity="info")
+
+
+def check_node_runtime() -> Check:
+    """Node/npm are needed only to install/run pi (optional) — see check_pi_runtime."""
+    node, npm = shutil.which("node"), shutil.which("npm")
+    if not node or not npm:
+        missing = ", ".join(name for name, path in (("node", node), ("npm", npm)) if not path)
+        return Check("node_runtime", True,
+                     f"missing: {missing} (needed only to install/run pi, which is optional)",
+                     severity="warn")
+    return Check("node_runtime", True, f"node: {node}, npm: {npm}", severity="info")
+
+
+def check_onboarding() -> Check:
+    """Whether `secagent init` has run. Both files it writes are fixed, well-known
+    per-user paths (not settings-driven — see `onboarding.py`), so this checks those
+    exact locations regardless of the active config."""
+    from .onboarding import default_models_json_path, default_user_config_path
+
+    models_json = default_models_json_path()
+    user_config = default_user_config_path()
+    missing = [str(p) for p in (models_json, user_config) if not p.exists()]
+    if missing:
+        return Check("onboarding", True,
+                     "not done — missing " + ", ".join(missing) +
+                     " (run `secagent init --domain <domain>`)", severity="warn")
+    return Check("onboarding", True, f"done: {models_json}, {user_config}", severity="info")
+
+
+def check_user_login(settings: Settings) -> Check:
+    """Whether `secagent login` has a live cached token — no network, no refresh
+    attempt (that is `get_user_token`'s job, run lazily on actual use); this just
+    reports what is already on disk."""
+    from .secsso import peek_user_token
+
+    cached = peek_user_token(settings.secsso)
+    if cached is None:
+        return Check("user_login", True,
+                     "not logged in (run `secagent login`)", severity="warn")
+    remaining = cached.expires_at - time.time()
+    if remaining <= 0:
+        return Check("user_login", True,
+                     "user token cached but EXPIRED (run `secagent login` again)",
+                     severity="warn")
+    who = cached.sub or cached.email or "developer"
+    return Check("user_login", True,
+                 f"logged in ({who}); token valid for {remaining / 3600:.1f}h more",
+                 severity="info")
+
+
+def fix_permissions(settings: Settings) -> list[Path]:
+    """``secagent doctor --fix``: pre-create + harden (0700) the token-cache
+    directories (service + per-user) so a first `secagent login` / `secagent token`
+    doesn't have to. Idempotent — mirrors the mkdir+harden_path a cache write already
+    does inline (secsso.py `_write_cache`/`_write_user_cache`) when the dir is
+    missing. Returns the directories touched, sorted for stable output."""
+    dirs = {
+        Path(settings.secsso.token_cache_path).expanduser().parent,
+        Path(settings.secsso.user_token_cache_path).expanduser().parent,
+    }
+    for d in dirs:
+        d.mkdir(parents=True, exist_ok=True)
+        harden_path(d, 0o700)
+    return sorted(dirs)
+
+
+def check_secrouter_models_endpoint(settings: Settings, probe: bool) -> Check:
+    """Best-effort reachability of SecRouter's model listing — lighter than
+    `check_llm_endpoint` (no generation, no requirement that `llm.api_key` resolve to
+    a valid credential): useful right after `secagent init`, before `secagent login`.
+    """
+    if not probe:
+        return Check("secrouter_models", True, "skipped (pass --probe)", severity="info")
+    url = settings.llm.base_url.rstrip("/") + "/models"
+    headers: dict[str, str] = {}
+    # Best-effort: an unresolvable api_key (e.g. not logged in yet) still lets this
+    # check test raw reachability unauthenticated — that is its whole point, unlike
+    # check_llm_endpoint, which needs real auth to mean anything.
+    with contextlib.suppress(SecretResolutionError):
+        headers = {"Authorization": f"Bearer {resolve_secret(settings.llm.api_key)}"}
+    try:
+        resp = httpx.get(url, headers=headers, timeout=15.0, verify=True)
+    except Exception as exc:  # noqa: BLE001 - report any connection issue
+        return Check("secrouter_models", False,
+                     f"unreachable: {url} ({exc.__class__.__name__})", severity="warn")
+    return Check("secrouter_models", True,
+                 f"reachable: {url} (HTTP {resp.status_code})", severity="info")
+
+
+def check_secsso_device_endpoints(settings: Settings, probe: bool) -> Check:
+    """Best-effort reachability of SecSSO's device-authorization + token endpoints
+    (the two `secagent login` needs) — set by `secagent init --domain ...`. A GET
+    (not the real POST flow) is deliberate: this is a reachability smoke test, not an
+    exercise of the flow — it must not mint real device codes on every doctor run.
+    """
+    dev_url, tok_url = settings.secsso.device_authorization_url, settings.secsso.token_url
+    if not dev_url and not tok_url:
+        return Check("secsso_device_endpoints", True,
+                     "not configured (run `secagent init --domain <domain>`)", severity="info")
+    if not probe:
+        return Check("secsso_device_endpoints", True,
+                     f"configured: device={dev_url or '(unset)'}, token={tok_url or '(unset)'}",
+                     severity="info")
+    problems: list[str] = []
+    reached: list[str] = []
+    for label, url in (("device_authorization_url", dev_url), ("token_url", tok_url)):
+        if not url:
+            continue
+        try:
+            resp = httpx.get(url, timeout=15.0, verify=True)
+            reached.append(f"{label} (HTTP {resp.status_code})")
+        except Exception as exc:  # noqa: BLE001 - report any connection issue
+            problems.append(f"{label} ({url}) unreachable: {exc.__class__.__name__}")
+    if problems:
+        detail = "; ".join(problems)
+        if reached:
+            detail += " | reachable: " + ", ".join(reached)
+        return Check("secsso_device_endpoints", False, detail, severity="warn")
+    return Check("secsso_device_endpoints", True, "reachable: " + ", ".join(reached),
+                 severity="info")
+
+
 def check_llm_endpoint(settings: Settings, probe: bool) -> Check:
     """Verify the LLM endpoint actually *generates*, not merely that it answers.
 
@@ -157,7 +342,18 @@ def check_llm_endpoint(settings: Settings, probe: bool) -> Check:
     if not probe:
         return Check("llm_endpoint", True, f"configured: {settings.llm.base_url}", severity="info")
     url = base + "/chat/completions"
-    headers = {"Authorization": f"Bearer {settings.llm.api_key}"}
+    try:
+        # `llm.api_key` may be a "!command" (e.g. "!secagent token --user", the
+        # per-user default `secagent init` writes — see secretval.py) that must be
+        # RESOLVED before use, not sent verbatim: sending the literal string
+        # "!secagent token --user" as a bearer value is a real generation failure
+        # this probe exists to catch, not a hypothetical one.
+        api_key = resolve_secret(settings.llm.api_key)
+    except SecretResolutionError as exc:
+        return Check("llm_endpoint", False,
+                     f"could not resolve llm.api_key ({exc}) — is `secagent login` "
+                     "needed first?", severity="error")
+    headers = {"Authorization": f"Bearer {api_key}"}
     payload = {
         "model": settings.llm.model,
         "messages": [{"role": "user", "content": "Reply with the single word: READY"}],
@@ -386,6 +582,8 @@ def check_network(settings: Settings) -> Check:
 def run_doctor(settings: Settings, probe_endpoint: bool = False) -> list[Check]:
     """Run all checks and return them in display order."""
     checks = [
+        check_python_version(),
+        check_secagent_version(),
         check_openssl(),
         check_fips(settings.fips.require_fips, settings.fips.allow_non_fips),
         check_no_weak_hashes(),
@@ -396,8 +594,14 @@ def run_doctor(settings: Settings, probe_endpoint: bool = False) -> list[Check]:
         check_analysis_backends(settings),
         check_heavy_analysis_backends(settings),
         check_docs_extra(),
+        check_pi_runtime(),
+        check_node_runtime(),
+        check_onboarding(),
+        check_user_login(settings),
         check_llm_endpoint(settings, probe_endpoint),
         check_llm_context_window(settings, probe_endpoint),
+        check_secrouter_models_endpoint(settings, probe_endpoint),
+        check_secsso_device_endpoints(settings, probe_endpoint),
     ]
     return checks
 

@@ -48,6 +48,16 @@ needed. (pi has no built-in MCP; Skills/extensions are the integration path.)
 
 ## 3b. Point pi at SecRouter — per-user login
 
+```{note}
+This is ONE of two ways to give pi a per-user SecRouter login; it wires the OAuth flow
+into pi's OWN `/login` command via a pi extension. The simpler default — no extension,
+no pi-specific `auth.json` involved — is `secagent init` + `secagent login`, which
+points pi's `models.json` at `!secagent token --user` instead: one login, shared by pi
+*and* secagent's own CLI. See `../docs/installation.md`'s developer quickstart. Use
+the extension below only if you specifically want the OAuth flow to live inside pi's
+own `/login`/`auth.json` instead.
+```
+
 `pi/extensions/secrouter-auth.ts` registers a `secrouter` provider whose `/login`
 drives SecSSO's OIDC **device-authorization** flow, so each developer authenticates
 as themselves rather than sharing a static key. pi stores + auto-refreshes the
@@ -55,8 +65,8 @@ resulting tokens in `~/.pi/agent/auth.json` (0600); this extension only implemen
 the SecSSO REST calls.
 
 ```bash
-export SECROUTER_SSO_DEVICE_URL=https://secsso.<domain>/realms/secrouter/protocol/openid-connect/auth/device
-export SECROUTER_SSO_TOKEN_URL=https://secsso.<domain>/realms/secrouter/protocol/openid-connect/token
+export SECROUTER_SSO_DEVICE_URL=https://secsso.<domain>:9000/application/o/device/
+export SECROUTER_SSO_TOKEN_URL=https://secsso.<domain>:9000/application/o/token/
 pi --extension ./pi/extensions/secrouter-auth.ts
 ```
 ```
@@ -68,10 +78,14 @@ Copy `pi/models.secrouter.example.json` to `~/.pi/agent/models.json` (or merge i
 alongside another provider's entry) to set the deployment's real `baseUrl` — see
 `https://secrouter.<domain>:47002/v1` — and the model catalog; the extension supplies
 only the OAuth flow, not the models list (same split `docs/models.md` documents for
-Ollama/vLLM). This is the per-user counterpart to `secagent token`
+Ollama/vLLM). This extension's OAuth flow is a second implementation of the same
+per-user identity `secagent login` / `secagent token --user` already provides (see the
+note above) — both are OIDC device-authorization (RFC 8628) against the same SecSSO,
+just stored/refreshed in two different places (`~/.pi/agent/auth.json` here vs.
+`~/.secagent/auth/user-token.json`). Distinct from `secagent token` with no `--user`
 ({doc}`../docs/configuration` "Inference at SecRouter"), which is a *service* identity
-(OIDC client_credentials) for automated/headless calls — same SecSSO IdP, two
-different grants for two different kinds of caller.
+(OIDC client_credentials) for automated/headless calls — three grants total across two
+callers, not two.
 
 ```{note}
 Verified against `@earendil-works/pi-coding-agent@0.83.0` / `@earendil-works/pi-ai@0.83.0`

@@ -60,6 +60,22 @@ repo ──► affordance engine ──► .secagent store (sqlite + json, sha25
                                     └─► MCP server   ──► external MCP clients
 ```
 
+## Developer quickstart
+
+Pointing secagent at an **existing SecRouter deployment**, as yourself? One command
+installs it, two more finish setup:
+
+```bash
+./install.sh                                # install secagent (+ pi, if Node is present)
+secagent init --domain <your-suite-domain>  # wire up pi + secagent for that deployment
+secagent login                              # authenticate as yourself (device code)
+```
+
+See [docs/installation.md](docs/installation.md) for the full walkthrough — the
+per-user identity (`secagent token --user`), why pi is optional, and how this differs
+from a SecDeploy/service install. The rest of this section covers installing secagent
+from source generally (e.g. for contributing to secagent itself).
+
 ## Install
 
 **Requires Python 3.11+.** secagent isn't on PyPI yet — install from a clone. `make dev`

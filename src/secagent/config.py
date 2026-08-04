@@ -75,18 +75,37 @@ class LLMConfig(BaseModel):
 
 
 class SecSSOConfig(BaseModel):
-    """OIDC ``client_credentials`` settings for secagent's own service identity against
-    SecSSO (the suite's identity provider). Backs ``secagent token`` / ``secsso.py``.
+    """OIDC settings for secagent's TWO distinct SecSSO identities. Backs both
+    ``secagent token`` (service) and ``secagent login``/``secagent token --user``
+    (per-user) — see ``secsso.py``.
 
     Distinct from ``llm.api_key``: this section *produces* a bearer token (for
     SecRouter, or any other SecSSO-protected endpoint); ``llm.api_key`` (directly, via
-    ``"!secagent token"`` — see ``secretval.py``) or a pi ``models.json`` provider
-    (``apiKey: "!secagent token"``) then *consumes* it.
+    ``"!secagent token"``/``"!secagent token --user"`` — see ``secretval.py``) or a pi
+    ``models.json`` provider (``apiKey: "!secagent token --user"``) then *consumes* it.
+
+    **Service identity** (``client_id``/``username``/``client_secret_env``/``scope``/
+    ``token_cache_path``) — OAuth2 ``client_credentials`` (RFC 6749 SS4.4), one shared
+    confidential client for headless/automated calls (``secagent index``/``scan``/...,
+    or a service-mode pi). Unchanged by the per-user fields below.
+
+    **Per-user identity** (``device_authorization_url``/``device_client_id``/
+    ``device_scope``/``user_token_cache_path``) — OIDC device authorization (RFC 8628),
+    a PUBLIC client (no secret — device-code flows need none, RFC 8628 SS3.1) that
+    authenticates as the individual developer running ``secagent login``. Reuses
+    ``token_url`` below: SecSSO (Authentik) serves one token endpoint per instance,
+    shared by every OAuth2 provider/grant on it (verified against
+    ``secsso/bootstrap/secsso.sh``'s ``secagent-config`` output and
+    ``secsso/blueprints/{secagent-service,secagent-pi}.yaml`` — both clients' token
+    requests hit the identical URL, only ``client_id``/``grant_type``/credentials
+    differ), so a second token-endpoint field would just be a duplicate of the first
+    that could drift out of sync with it.
     """
 
-    # SecSSO's OIDC token endpoint, e.g. https://secsso.<domain>/realms/secrouter/
-    # protocol/openid-connect/token (Keycloak-style; adjust to your IdP). Empty
-    # refuses to run (secagent token fails loudly rather than guessing an endpoint).
+    # SecSSO's OIDC token endpoint, e.g. https://secsso.<domain>:9000/application/o/
+    # token/ (Authentik-style; adjust to your IdP). Empty refuses to run (`secagent
+    # token` / `secagent token --user` fail loudly rather than guessing an endpoint).
+    # Shared by the service AND per-user grants — see the class docstring.
     token_url: str = ""
     client_id: str = "secagent"
     # Informational only: RFC 6749's client_credentials grant carries no
@@ -100,7 +119,7 @@ class SecSSOConfig(BaseModel):
     # point this at a different variable) out of band (secret mount, CI secret, ...).
     client_secret_env: str = "SECAGENT_CLIENT_SECRET"
     scope: str = "openid secrouter"
-    # Where `secagent token` caches the fetched token between invocations. pi
+    # Where `secagent token` caches the fetched SERVICE token between invocations. pi
     # re-invokes a models.json "!command" apiKey on every request (see docs/models.md
     # "Value Resolution"), so without a cache here every LLM call anywhere in the
     # suite would cost a network round trip to SecSSO. Deliberately NOT under any
@@ -108,8 +127,30 @@ class SecSSOConfig(BaseModel):
     # and written with owner-only (0600) permissions.
     token_cache_path: str = "~/.secagent/auth/secsso-token.json"
     # Refresh this many seconds before actual expiry, so a token already in flight to
-    # SecRouter does not expire mid-request.
+    # SecRouter does not expire mid-request. Shared by both caches below.
     expiry_buffer_s: float = 60.0
+
+    # -- per-user (device-code) fields -- see `secagent login` / `secagent token --user`
+    #
+    # SecSSO's OIDC device_authorization endpoint, e.g. https://secsso.<domain>:9000/
+    # application/o/device/. Empty refuses to run (`secagent login` fails loudly
+    # rather than guessing an endpoint). Normally set by `secagent init --domain ...`,
+    # not by hand.
+    device_authorization_url: str = ""
+    # The PUBLIC client `secagent login` authenticates as (no secret — see the class
+    # docstring). Distinct from `client_id` above (the confidential service client);
+    # matches secsso/blueprints/secagent-pi.yaml's `client_id: !Context pi_client_id`.
+    device_client_id: str = "secagent-pi"
+    # Distinct from `scope` above: includes `profile`/`email` so `secagent login` can
+    # show *who* just signed in (best-effort, from the token response's OIDC
+    # `id_token` — see `secsso.py`); `secrouter` is still required, exactly as for the
+    # service grant, or the issued token's audience won't include SecRouter.
+    device_scope: str = "openid profile email secrouter"
+    # Where `secagent login` caches {access_token, refresh_token, expires_at, sub,
+    # email} (0600). Separate from `token_cache_path` — the two are different
+    # people's tokens (a shared service identity vs. this one developer) and must
+    # never be conflated into a single file.
+    user_token_cache_path: str = "~/.secagent/auth/user-token.json"
 
 
 class GitLabConfig(BaseModel):
@@ -692,40 +733,70 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return out
 
 
+def _user_config_path() -> Path:
+    """``~/.secagent/config.yaml`` — the per-user layer ``secagent init`` writes.
+
+    A function (not a module-level constant) so it re-reads ``$HOME`` on every call
+    rather than freezing whatever it was at import time — the same reason
+    ``secsso.py``'s ``_cache_path`` is a function. That matters for tests: importing
+    this module once and then ``monkeypatch.setenv("HOME", tmp_path)`` in a later test
+    must still change what this resolves to.
+    """
+    return Path("~/.secagent/config.yaml").expanduser()
+
+
+def _load_yaml_config_layer(p: Path) -> dict[str, Any]:
+    """Load + validate one YAML config layer. Shared by the per-user file and
+    ``--config``/``$SECAGENT_CONFIG`` so both get the identical "unknown section"
+    guard (see ``load_settings``'s docstring on why that guard exists)."""
+    loaded = yaml.safe_load(p.read_text()) or {}
+    if not isinstance(loaded, dict):
+        raise ValueError(f"config file must be a YAML mapping: {p}")
+    unknown = sorted(set(loaded) - set(Settings.model_fields))
+    if unknown:
+        known = ", ".join(sorted(Settings.model_fields))
+        raise ValueError(
+            f"unknown config section(s) in {p}: {', '.join(unknown)}. "
+            f"Valid sections: {known}"
+        )
+    return loaded
+
+
 def load_settings(config_path: str | os.PathLike[str] | None = None) -> Settings:
-    """Load settings from defaults, an optional YAML file, then environment vars.
+    """Load settings from defaults, an optional per-user file, an optional explicit
+    file, then environment vars.
 
     Resolution order (lowest to highest precedence):
       1. Model defaults.
-      2. YAML file (``config_path`` arg, else ``$SECAGENT_CONFIG``).
-      3. ``SECAGENT_*`` environment variables (handled by pydantic-settings).
+      2. ``~/.secagent/config.yaml``, if present. Written by ``secagent init`` for a
+         developer's own SecRouter/SecSSO wiring; a clearly per-user, opt-in file —
+         when it does not exist (the common case before ``secagent init``), this layer
+         is a no-op and behavior is exactly what it was before this layer existed.
+      3. YAML file (``config_path`` arg, else ``$SECAGENT_CONFIG``).
+      4. ``SECAGENT_*`` environment variables (handled by pydantic-settings).
     """
-    path = config_path or os.environ.get("SECAGENT_CONFIG")
     file_values: dict[str, Any] = {}
+
+    user_config = _user_config_path()
+    if user_config.exists():
+        file_values = _load_yaml_config_layer(user_config)
+
+    path = config_path or os.environ.get("SECAGENT_CONFIG")
     if path:
         p = Path(path)
         if not p.exists():
             raise FileNotFoundError(f"config file not found: {p}")
-        loaded = yaml.safe_load(p.read_text()) or {}
-        if not isinstance(loaded, dict):
-            raise ValueError(f"config file must be a YAML mapping: {p}")
         # Reject unknown top-level sections rather than ignoring them. A misspelled or
         # misplaced key ("testgen:" written as "test_gen:") silently changed nothing, so
         # the run proceeded with defaults and the user drew conclusions about settings
         # that were never applied. Config that does nothing must not look like config
         # that worked.
-        unknown = sorted(set(loaded) - set(Settings.model_fields))
-        if unknown:
-            known = ", ".join(sorted(Settings.model_fields))
-            raise ValueError(
-                f"unknown config section(s) in {p}: {', '.join(unknown)}. "
-                f"Valid sections: {known}"
-            )
-        file_values = loaded
+        file_values = _deep_merge(file_values, _load_yaml_config_layer(p))
 
-    # Desired precedence: defaults < YAML file < environment. pydantic-settings
-    # applies env at construction, so we compute which keys env actually overrode
-    # and layer those on top of the file values (env wins; file fills the rest).
+    # Desired precedence: defaults < per-user file < --config/SECAGENT_CONFIG file <
+    # environment. pydantic-settings applies env at construction, so we compute which
+    # keys env actually overrode and layer those on top of the file values (env wins;
+    # file fills the rest).
     env_settings = Settings()
     env_overrides = _diff(_pristine_dump(), env_settings.model_dump())
     merged = _deep_merge(file_values, env_overrides)

@@ -57,12 +57,23 @@ def version() -> None:
 @app.command()
 def doctor(
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config YAML"),
-    probe: bool = typer.Option(False, "--probe", help="Probe the configured LLM endpoint"),
+    probe: bool = typer.Option(
+        False, "--probe",
+        help="Probe the configured LLM endpoint, plus (best-effort) SecRouter/SecSSO reachability"),
+    fix: bool = typer.Option(
+        False, "--fix",
+        help="Pre-create + harden (0700) the token-cache directories before checking"),
 ) -> None:
-    """Run FIPS + dependency self-checks."""
-    from .doctor import doctor_failed, run_doctor
+    """Run FIPS + dependency self-checks, plus developer-onboarding status: Python /
+    secagent / pi / Node versions, whether `secagent init` has run, and whether
+    `secagent login` has a live cached token."""
+    from .doctor import doctor_failed, fix_permissions, run_doctor
 
     settings = _settings(config)
+    if fix:
+        fixed = fix_permissions(settings)
+        console.print("[green]--fix: hardened (0700):[/green] "
+                     + ", ".join(str(p) for p in fixed))
     checks = run_doctor(settings, probe_endpoint=probe)
 
     table = Table(title="secagent doctor")
@@ -114,25 +125,33 @@ def show_config(
 @app.command()
 def token(
     config: str | None = typer.Option(None, "--config", "-c"),
+    user: bool = typer.Option(
+        False, "--user", "-u",
+        help="Print YOUR OWN cached token from `secagent login`, not the service token"),
 ) -> None:
-    """Print a SecSSO bearer token for secagent's service identity (client_credentials).
+    """Print a SecSSO bearer token: secagent's service identity by default
+    (client_credentials), or — with ``--user`` — the developer's own token cached by
+    `secagent login` (OIDC device authorization).
 
-    Cached on disk until near expiry (see ``secsso.token_cache_path`` /
-    ``expiry_buffer_s``), so this is cheap to invoke on every request. That is exactly
-    what pi does with a ``models.json`` ``"!command"`` ``apiKey`` — it re-runs the
-    command on every actual LLM call rather than caching the result itself — so a
-    provider configured with ``apiKey: "!secagent token"`` gets a fresh-enough token
-    on every call without ever touching ``models.json`` again. Set
-    ``SECAGENT_LLM__API_KEY="!secagent token"`` to have secagent's OWN LLM calls
-    (index/scan/testgen/...) reuse the identical helper.
+    Both are cached on disk until near expiry (see ``secsso.token_cache_path`` /
+    ``secsso.user_token_cache_path`` / ``expiry_buffer_s``), so either form is cheap
+    to invoke on every request. That is exactly what pi does with a ``models.json``
+    ``"!command"`` ``apiKey`` — it re-runs the command on every actual LLM call rather
+    than caching the result itself — so a provider configured with ``apiKey:
+    "!secagent token --user"`` gets a fresh-enough token on every call without ever
+    touching ``models.json`` again. Set ``SECAGENT_LLM__API_KEY="!secagent token
+    --user"`` to have secagent's OWN LLM calls (index/scan/testgen/...) reuse the
+    identical helper as the logged-in developer; drop ``--user`` for the service
+    identity, unchanged from before this flag existed.
 
     STDOUT on success is exactly the raw token and nothing else — safe to use
-    directly as a credential value. All diagnostics go to stderr; a failure exits
-    non-zero and prints nothing to stdout.
+    directly as a credential value. All diagnostics go to stderr; a failure (with
+    ``--user`` and no prior `secagent login`, in particular) exits non-zero and
+    prints nothing to stdout.
     """
     import sys
 
-    from .secsso import SecSSOError, get_token
+    from .secsso import SecSSOError, get_token, get_user_token
 
     settings = _settings(config)
     try:
@@ -140,10 +159,110 @@ def token(
         # default, and stdout here must be exactly the token — nothing else, no ANSI
         # escapes — since pi's `!command` resolution and LLMConfig.api_key both use
         # this output verbatim as a credential.
-        print(get_token(settings.secsso))
+        print(get_user_token(settings.secsso) if user else get_token(settings.secsso))
     except SecSSOError as exc:
         print(f"secagent token: {exc}", file=sys.stderr)
         raise typer.Exit(code=1) from None
+
+
+@app.command()
+def login(
+    config: str | None = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Authenticate as YOURSELF against SecSSO (OIDC device authorization, RFC 8628).
+
+    Prints a verification URL + code; approve it in any browser (this machine or a
+    phone), and the CLI polls until you do. Caches the result at
+    ``secsso.user_token_cache_path`` (0600) for `secagent token --user` — and, via
+    that, pi's ``!secagent token --user`` ``apiKey`` (see `secagent init`) — to reuse.
+    Safe to re-run any time: it always re-authenticates and overwrites the cache.
+    """
+    import sys
+
+    from .secsso import DeviceAuthorization, SecSSOError
+    from .secsso import login as device_login
+
+    settings = _settings(config)
+
+    def on_prompt(device: DeviceAuthorization) -> None:
+        console.print("[bold]Sign in to SecSSO to continue:[/bold]")
+        if device.verification_uri_complete:
+            console.print(f"  {device.verification_uri_complete}")
+            console.print(f"  (or open {device.verification_uri} and enter code: "
+                         f"[bold]{device.user_code}[/bold])")
+        else:
+            console.print(f"  {device.verification_uri}")
+            console.print(f"  Enter code: [bold]{device.user_code}[/bold]")
+        console.print("Waiting for approval...")
+
+    try:
+        result = device_login(settings.secsso, on_prompt=on_prompt)
+    except SecSSOError as exc:
+        print(f"secagent login: {exc}", file=sys.stderr)
+        raise typer.Exit(code=1) from None
+
+    who = result.email or result.sub
+    if who:
+        console.print(f"[green]Logged in as {who}.[/green]")
+    else:
+        console.print("[green]Logged in.[/green]")
+    cache_path = Path(settings.secsso.user_token_cache_path).expanduser()
+    console.print(f"Token cached at {cache_path}")
+
+
+@app.command()
+def logout(
+    config: str | None = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Delete the per-user SecSSO token cached by `secagent login`."""
+    from .secsso import logout as device_logout
+
+    settings = _settings(config)
+    if device_logout(settings.secsso):
+        console.print("[green]Logged out (removed the cached user token).[/green]")
+    else:
+        console.print("Nothing to log out of (no cached user token).")
+
+
+@app.command()
+def init(
+    domain: str | None = typer.Option(
+        None, "--domain", help="Suite domain, e.g. sec.internal -- derives SecRouter/SecSSO URLs"),
+    secrouter_url: str | None = typer.Option(
+        None, "--secrouter-url",
+        help="Override the derived SecRouter base URL (full URL incl. /v1)"),
+    secsso_url: str | None = typer.Option(
+        None, "--secsso-url",
+        help="Override the derived SecSSO base URL (no path suffix, e.g. https://secsso.example.com:9000)"),
+    model: str = typer.Option("balanced", "--model", help="Model id to register with pi and use"),
+    force: bool = typer.Option(
+        False, "--force", help="Back up + replace existing models.json/config.yaml"),
+) -> None:
+    """One-time per-developer onboarding: wire up pi and secagent's own CLI at a
+    SecRouter deployment, so both authenticate as YOU (via `secagent login`
+    afterwards).
+
+    Writes ``~/.pi/agent/models.json`` (a ``secrouter`` provider only) and
+    ``~/.secagent/config.yaml`` (this CLI's own per-user ``llm``/``secsso``
+    settings — auto-loaded by every later `secagent` invocation, see
+    docs/configuration.md), both using ``!secagent token --user`` as the credential —
+    never a stored secret. Safe to re-run (idempotent): only the ``secrouter``
+    models.json provider and the ``llm``/``secsso`` config sections are touched;
+    anything else already in those files is left alone.
+    """
+    from .onboarding import OnboardingError, run_init
+
+    try:
+        result = run_init(
+            domain=domain, secrouter_url=secrouter_url, secsso_url=secsso_url,
+            model=model, force=force,
+        )
+    except OnboardingError as exc:
+        console.print(f"[red]secagent init: {exc}[/red]")
+        raise typer.Exit(code=1) from None
+
+    for line in result.summary_lines():
+        console.print(line)
 
 
 @app.command()
