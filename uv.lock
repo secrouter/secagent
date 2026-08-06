@@ -681,6 +681,15 @@ wheels = [
 ]
 
 [[package]]
+name = "lean-ctx-client"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/55/85/9bee630aad562373eed2fcf275ba10e4b654144e13d3d0b5ce5e1135df88/lean_ctx_client-0.1.0.tar.gz", hash = "sha256:8cecf2a8306bfd31c106d53cd402f6dd35c5d95e96a072827378c33f50f2cbd2", size = 17277, upload-time = "2026-06-21T21:37:33.074Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7f/fb/e5a7cc1d779d9e146ad2da888c93d3ddaadbe365c353931688cc1c33ead9/lean_ctx_client-0.1.0-py3-none-any.whl", hash = "sha256:5da83fea12b8747f0ff6ee3a248933f031005f850d9b7ea9705e7a1340cc54aa", size = 16232, upload-time = "2026-06-21T21:37:30.161Z" },
+]
+
+[[package]]
 name = "libclang"
 version = "18.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1770,6 +1779,9 @@ docs = [
     { name = "sphinx", version = "9.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "sphinxcontrib-drawio" },
 ]
+leanctx = [
+    { name = "lean-ctx-client" },
+]
 review = [
     { name = "fastapi" },
     { name = "uvicorn" },
@@ -1793,6 +1805,7 @@ requires-dist = [
     { name = "furo", marker = "extra == 'docs'", specifier = ">=2024.1.29" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "jinja2", specifier = ">=3.1" },
+    { name = "lean-ctx-client", marker = "extra == 'leanctx'", specifier = "==0.1.0" },
     { name = "libclang", marker = "extra == 'clang'", specifier = ">=16" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.9" },
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=2.0" },
@@ -1815,7 +1828,7 @@ requires-dist = [
     { name = "types-pyyaml", marker = "extra == 'dev'" },
     { name = "uvicorn", marker = "extra == 'review'", specifier = ">=0.29" },
 ]
-provides-extras = ["docs", "review", "tokenizer", "clang", "csharp", "rust", "dev", "supplychain"]
+provides-extras = ["docs", "review", "tokenizer", "leanctx", "clang", "csharp", "rust", "dev", "supplychain"]
 
 [[package]]
 name = "shellingham"

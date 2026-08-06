@@ -13,9 +13,11 @@ See docs/leanctx.md.
 
 from __future__ import annotations
 
+import os
 import shutil
+import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from .config import LeanCtxConfig
@@ -98,6 +100,46 @@ def lockdown_env(cfg: LeanCtxConfig) -> dict[str, str]:
 def binary_installed() -> bool:
     """Whether the ``lean-ctx`` binary is on PATH (the daemon/CLI)."""
     return shutil.which("lean-ctx") is not None
+
+
+def write_config(cfg: LeanCtxConfig, path: Path | None = None) -> Path:
+    """Write the locked-down :func:`config_toml` to ``path`` (default LeanCTX's config
+    location), ``0600``, creating parents. Returns the path. Pure file I/O — the CLI wiring
+    (``lean-ctx init``/``harden``) is separate + best-effort (see :func:`wire_pi`)."""
+    target = path or config_toml_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(config_toml(cfg))
+    target.chmod(0o600)
+    return target
+
+
+def wire_pi(cfg: LeanCtxConfig, *, runner: Callable[..., Any] | None = None) -> list[str]:
+    """Best-effort: register LeanCTX with pi (``lean-ctx init --agent pi``) and harden it
+    (``lean-ctx harden``), with the lockdown env applied. Returns human-readable step results.
+
+    NEVER fails onboarding: if the ``lean-ctx`` binary isn't installed (or a step errors), it's
+    reported and skipped — the ``config.toml`` is still written, and ``secagent doctor`` will flag
+    the missing binary. ``runner`` (``(argv, env) -> completed``) is injectable for tests.
+    """
+    def _default_runner(argv: list[str], env: dict[str, str]) -> subprocess.CompletedProcess:
+        return subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120, check=False)
+
+    run = runner or _default_runner
+    if not binary_installed():
+        return ["lean-ctx not found — skipped pi wiring (install it, then re-run `secagent init`); "
+                "see docs/leanctx.md"]
+    env = {**os.environ, **lockdown_env(cfg)}
+    init_argv = ["lean-ctx", "init", "--agent", "pi"] + (["--mode", "mcp"] if cfg.pi_enable_mcp else [])
+    steps: list[str] = []
+    for argv, label in ((init_argv, "registered LeanCTX with pi (lean-ctx init --agent pi)"),
+                        (["lean-ctx", "harden"], "hardened LeanCTX (lean-ctx harden)")):
+        try:
+            result = run(argv, env)
+            rc = getattr(result, "returncode", 0)
+            steps.append(label if rc == 0 else f"{label} — WARN (exit {rc})")
+        except Exception as exc:  # noqa: BLE001 — best-effort; a failed step never aborts init
+            steps.append(f"{label} — skipped ({exc})")
+    return steps
 
 
 def sdk_available() -> bool:

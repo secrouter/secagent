@@ -44,6 +44,13 @@ review = [
 tokenizer = [
     "tokenizers>=0.15",
 ]
+# LeanCTX context compression of secagent's OWN SecRouter calls (chat bridge / MR review).
+# The pi-side compression (the wire compressor + ctx_* tools) comes from the `lean-ctx` binary
+# + `pi-lean-ctx` npm extension, not this. Absent => secagent's own calls pass through
+# uncompressed (never blocked). Pinned; see src/secagent/config.py LEANCTX_CLIENT_VERSION.
+leanctx = [
+    "lean-ctx-client==0.1.0",
+]
 # Accurate C/C++ functions + the inter-file call map via the clang AST. Bundles a
 # libclang shared library. Absent => secagent falls back to regex symbols / the LLM.
 clang = [

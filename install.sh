@@ -107,6 +107,33 @@ else
 See docs/installation.md."
 fi
 
+# ── 5b. LeanCTX (context compression) — pinned, locked down; on by default ─────────────
+# The `lean-ctx` binary + `pi-lean-ctx` extension give pi its ctx_* tools + the wire compressor;
+# the `lean-ctx-client` SDK lets secagent compress its OWN SecRouter calls. All optional + pinned
+# (secagent degrades gracefully without them). `secagent init` writes the locked-down config +
+# wires pi; `secagent doctor` verifies the lockdown. See docs/leanctx.md.
+LEANCTX_VERSION="${LEANCTX_VERSION:-3.9.17}"
+LEANCTX_CLIENT_VERSION="${LEANCTX_CLIENT_VERSION:-0.1.0}"
+if command -v npm >/dev/null 2>&1; then
+    info "secagent-install: installing LeanCTX (lean-ctx + pi-lean-ctx @ ${LEANCTX_VERSION})..."
+    if npm install -g "lean-ctx-bin@${LEANCTX_VERSION}" "pi-lean-ctx@${LEANCTX_VERSION}"; then
+        info "secagent-install: LeanCTX installed"
+        # Harden immediately (idempotent, best-effort) — `secagent init` re-applies it too.
+        command -v lean-ctx >/dev/null 2>&1 && LEAN_CTX_NO_UPDATE_CHECK=1 lean-ctx harden >/dev/null 2>&1 || true
+    else
+        warn "LeanCTX npm install failed -- continuing (optional; pi runs without it). See docs/leanctx.md."
+    fi
+else
+    warn "npm not found -- skipping LeanCTX binary/pi extension (optional; see docs/leanctx.md)."
+fi
+# The SDK (secagent's own-call compression) into secagent's tool env — best-effort so an
+# air-gapped/PyPI-less host still installs fine (compression then passes through).
+uv tool install --python "$python_bin" --force \
+    --with "lean-ctx-client==${LEANCTX_CLIENT_VERSION}" \
+    "git+${SECAGENT_GIT_URL}@${SECAGENT_REF}" >/dev/null 2>&1 \
+    && info "secagent-install: LeanCTX SDK (lean-ctx-client@${LEANCTX_CLIENT_VERSION}) added" \
+    || warn "could not add LeanCTX SDK (optional) -- secagent's own-call compression will pass through."
+
 # ── Done ─────────────────────────────────────────────────────────────────────────
 info ""
 info "secagent-install: done. Next steps:"

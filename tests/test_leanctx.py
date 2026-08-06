@@ -118,3 +118,68 @@ def test_client_does_not_compress_without_leanctx(monkeypatch):
 
     _client(handler, leanctx_cfg=None).chat([{"role": "user", "content": "hi"}])
     assert calls["n"] == 0   # leanctx=None → compressor never invoked (tuned paths unaffected)
+
+
+# ── wire_pi (best-effort pi registration) ────────────────────────────────────────────────────
+def test_wire_pi_skips_when_binary_absent(monkeypatch):
+    monkeypatch.setattr(leanctx, "binary_installed", lambda: False)
+    steps = leanctx.wire_pi(LeanCtxConfig())
+    assert len(steps) == 1 and "not found" in steps[0]   # non-fatal skip
+
+
+def test_wire_pi_runs_init_and_harden_with_lockdown_env(monkeypatch):
+    monkeypatch.setattr(leanctx, "binary_installed", lambda: True)
+    calls: list = []
+
+    class _R:
+        returncode = 0
+
+    def runner(argv, env):
+        calls.append((argv, env))
+        return _R()
+
+    steps = leanctx.wire_pi(LeanCtxConfig(), runner=runner)
+    assert calls[0][0] == ["lean-ctx", "init", "--agent", "pi"]
+    assert calls[1][0] == ["lean-ctx", "harden"]
+    assert calls[0][1]["LEAN_CTX_NO_UPDATE_CHECK"] == "1"   # lockdown env carried into the CLI
+    assert calls[0][1]["LEAN_CTX_HARDEN"] == "1"
+    assert len(steps) == 2
+
+
+# ── onboarding: run_init writes the locked-down config.toml ───────────────────────────────────
+def test_run_init_writes_locked_down_leanctx_config(tmp_path, monkeypatch):
+    import stat
+
+    from secagent import leanctx as leanctx_mod
+    from secagent.onboarding import run_init
+
+    monkeypatch.setattr(leanctx_mod, "binary_installed", lambda: False)  # hermetic: no real CLI
+    lc_toml = tmp_path / "lean-ctx.toml"
+    res = run_init(
+        domain="test.internal",
+        models_json_path=tmp_path / "models.json",
+        config_path=tmp_path / "config.yaml",
+        leanctx=LeanCtxConfig(),
+        leanctx_config_path=lc_toml,
+    )
+    assert res.leanctx_config_path == lc_toml
+    body = lc_toml.read_text()
+    assert 'rules_injection = "off"' in body and 'history_mode = "cache-aware"' in body
+    assert stat.S_IMODE(lc_toml.stat().st_mode) == 0o600       # 0600 (config inside the boundary)
+    assert res.leanctx_steps and "not found" in res.leanctx_steps[0]
+    assert any("LeanCTX" in ln for ln in res.summary_lines())  # surfaced in the CLI report
+
+
+def test_run_init_skips_leanctx_when_disabled(tmp_path):
+    from secagent.onboarding import run_init
+
+    res = run_init(
+        domain="test.internal",
+        models_json_path=tmp_path / "models.json",
+        config_path=tmp_path / "config.yaml",
+        leanctx=LeanCtxConfig(enabled=False),
+        leanctx_config_path=tmp_path / "lean-ctx.toml",
+    )
+    assert res.leanctx_config_path is None
+    assert not (tmp_path / "lean-ctx.toml").exists()
+    assert res.leanctx_steps == []

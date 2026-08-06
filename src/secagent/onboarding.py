@@ -31,11 +31,13 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from .config import LeanCtxConfig
 
 # ── Suite URL conventions ────────────────────────────────────────────────────────
 #
@@ -318,6 +320,8 @@ class InitResult:
     config_backup: Path | None
     peers: SuitePeers
     model: str
+    leanctx_config_path: Path | None = None
+    leanctx_steps: list[str] = field(default_factory=list)
 
     def summary_lines(self) -> list[str]:
         """Human-readable "exactly what was written" report for the CLI."""
@@ -331,6 +335,11 @@ class InitResult:
         if self.config_backup:
             lines.append(f"Backed up previous config.yaml -> {self.config_backup}")
         lines.append(f"Wrote {self.config_path} (llm + secsso sections)")
+        if self.leanctx_config_path:
+            lines.append(f"Wrote {self.leanctx_config_path} (LeanCTX — locked down: loopback, "
+                         "no telemetry/update-check, cache-aware compression)")
+            for step in self.leanctx_steps:
+                lines.append(f"  LeanCTX: {step}")
         lines.append("")
         lines.append("Next: run `secagent login` to authenticate as yourself.")
         return lines
@@ -345,6 +354,8 @@ def run_init(
     force: bool = False,
     models_json_path: Path | None = None,
     config_path: Path | None = None,
+    leanctx: LeanCtxConfig | None = None,
+    leanctx_config_path: Path | None = None,
 ) -> InitResult:
     """Implements ``secagent init``.
 
@@ -362,6 +373,16 @@ def run_init(
     models_backup = _write_models_json(models_path, peers, model, force)
     config_backup = _write_user_config(cfg_path, peers, model, domain, force)
 
+    # LeanCTX (on by default): write its locked-down config.toml + best-effort pi wiring. Skipped
+    # when disabled or not passed; wire_pi is non-fatal (a missing binary never aborts init).
+    lc_path: Path | None = None
+    lc_steps: list[str] = []
+    if leanctx is not None and leanctx.enabled:
+        from . import leanctx as _leanctx
+
+        lc_path = _leanctx.write_config(leanctx, leanctx_config_path)
+        lc_steps = _leanctx.wire_pi(leanctx)
+
     return InitResult(
         models_json_path=models_path,
         config_path=cfg_path,
@@ -369,4 +390,6 @@ def run_init(
         config_backup=config_backup,
         peers=peers,
         model=model,
+        leanctx_config_path=lc_path,
+        leanctx_steps=lc_steps,
     )

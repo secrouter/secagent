@@ -241,6 +241,9 @@ def init(
     model: str = typer.Option("balanced", "--model", help="Model id to register with pi and use"),
     force: bool = typer.Option(
         False, "--force", help="Back up + replace existing models.json/config.yaml"),
+    no_leanctx: bool = typer.Option(
+        False, "--no-leanctx",
+        help="Skip LeanCTX setup for this init (context compression; on by default)"),
 ) -> None:
     """One-time per-developer onboarding: wire up pi and secagent's own CLI at a
     SecRouter deployment, so both authenticate as YOU (via `secagent login`
@@ -254,12 +257,17 @@ def init(
     models.json provider and the ``llm``/``secsso`` config sections are touched;
     anything else already in those files is left alone.
     """
+    from .config import load_settings
     from .onboarding import OnboardingError, run_init
+
+    # LeanCTX config comes from the resolved settings (so ~/.secagent/config.yaml + env apply);
+    # --no-leanctx skips it for this run regardless of the persisted `leanctx.enabled`.
+    leanctx = None if no_leanctx else load_settings().leanctx
 
     try:
         result = run_init(
             domain=domain, secrouter_url=secrouter_url, secsso_url=secsso_url,
-            model=model, force=force,
+            model=model, force=force, leanctx=leanctx,
         )
     except OnboardingError as exc:
         console.print(f"[red]secagent init: {exc}[/red]")
