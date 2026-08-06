@@ -46,6 +46,11 @@ endpoint**, writes them to the **affordance store** (`.secagent/`), and posts te
 - Keep the LLM endpoint **inside the boundary** (local llama.cpp/vLLM — which is
   exactly secagent's design). Never point secagent at an external/SaaS model with CUI.
 - Treat `.secagent/` and generated docs as potential CUI at rest (see SC/MP gaps).
+- **LeanCTX** (context compression, on by default) sees prompt content, so it is a component
+  **inside the boundary**. It is locked down accordingly: loopback-only endpoint, no
+  telemetry/update phone-home, hardened, and its persistent context store **off by default** (no
+  new CUI at rest). If you enable `leanctx.persist_context`, treat its `state_dir` as CUI at rest.
+  `secagent doctor` fails on a routable endpoint or enabled telemetry. See [LeanCTX](leanctx.md).
 
 ## Legend
 

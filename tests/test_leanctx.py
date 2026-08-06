@@ -75,7 +75,8 @@ def test_lockdown_env_respects_opt_ins():
 def test_compress_messages_passthrough_when_disabled():
     msgs = [{"role": "user", "content": "hi"}]
     assert leanctx.compress_messages(LeanCtxConfig(enabled=False), msgs, model="m") is msgs
-    assert leanctx.compress_messages(LeanCtxConfig(compress_own_calls=False), msgs, model="m") is msgs
+    assert leanctx.compress_messages(
+        LeanCtxConfig(compress_own_calls=False), msgs, model="m") is msgs
     assert leanctx.compress_messages(LeanCtxConfig(), [], model="m") == []
 
 
@@ -83,7 +84,8 @@ def test_compress_messages_passthrough_when_daemon_absent():
     # enabled + compress_own_calls on (defaults), but no SDK/daemon reachable → original returned:
     # a compression outage must never drop or corrupt a governed request.
     msgs = [{"role": "user", "content": "hi"}]
-    assert leanctx.compress_messages(LeanCtxConfig(endpoint="http://127.0.0.1:1"), msgs, model="m") == msgs
+    assert leanctx.compress_messages(
+        LeanCtxConfig(endpoint="http://127.0.0.1:1"), msgs, model="m") == msgs
 
 
 # ── LLMClient wiring: the governed conversational path (review/chat) compresses ──────────────
@@ -105,7 +107,7 @@ def test_client_compresses_when_leanctx_configured(monkeypatch):
     c.chat([{"role": "user", "content": "hello"}])
     assert seen["messages"] == [{"role": "user", "content": "hello"}]   # got the originals
     assert seen["model"] == c.config.model
-    assert posted["body"]["messages"] == [{"role": "user", "content": "COMPRESSED"}]  # used the result
+    assert posted["body"]["messages"] == [{"role": "user", "content": "COMPRESSED"}]  # compressed
 
 
 def test_client_does_not_compress_without_leanctx(monkeypatch):
@@ -183,3 +185,82 @@ def test_run_init_skips_leanctx_when_disabled(tmp_path):
     assert res.leanctx_config_path is None
     assert not (tmp_path / "lean-ctx.toml").exists()
     assert res.leanctx_steps == []
+
+
+# ── doctor: check_leanctx enforces the CUI-containment + lockdown invariants ──────────────────
+def test_check_leanctx_ok_when_installed_and_locked_down(monkeypatch):
+    from secagent.config import Settings
+    from secagent.doctor import check_leanctx
+
+    monkeypatch.setattr(leanctx, "binary_installed", lambda: True)
+    monkeypatch.setattr(leanctx, "sdk_available", lambda: True)
+    c = check_leanctx(Settings())
+    assert c.ok and c.severity == "info" and "locked down" in c.detail
+
+
+def test_check_leanctx_errors_on_routable_endpoint():
+    from secagent.config import Settings
+    from secagent.doctor import check_leanctx
+
+    s = Settings()
+    s.leanctx.endpoint = "http://10.0.0.5:4444"          # would expose CUI prompts
+    c = check_leanctx(s)
+    assert not c.ok and c.severity == "error" and "loopback" in c.detail
+
+
+def test_check_leanctx_errors_on_telemetry():
+    from secagent.config import Settings
+    from secagent.doctor import check_leanctx
+
+    s = Settings()
+    s.leanctx.telemetry = True
+    c = check_leanctx(s)
+    assert not c.ok and c.severity == "error" and "telemetry" in c.detail
+
+
+def test_check_leanctx_warns_on_persistence(monkeypatch):
+    from secagent.config import Settings
+    from secagent.doctor import check_leanctx
+
+    monkeypatch.setattr(leanctx, "binary_installed", lambda: True)
+    monkeypatch.setattr(leanctx, "sdk_available", lambda: True)
+    s = Settings()
+    s.leanctx.persist_context = True
+    c = check_leanctx(s)
+    assert c.ok and c.severity == "warn" and "CUI at rest" in c.detail
+
+
+def test_check_leanctx_disabled_is_info():
+    from secagent.config import Settings
+    from secagent.doctor import check_leanctx
+
+    s = Settings()
+    s.leanctx.enabled = False
+    c = check_leanctx(s)
+    assert c.ok and c.severity == "info" and "disabled" in c.detail
+
+
+# ── CLI: `secagent leanctx` status ───────────────────────────────────────────────────────────
+def test_cli_leanctx_status_runs(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from secagent.cli import app
+
+    monkeypatch.setenv("HOME", str(tmp_path))            # isolate ~/.secagent/config.yaml
+    r = CliRunner().invoke(app, ["leanctx"])
+    assert r.exit_code == 0, r.output
+    out = r.output.replace("\n", "")
+    assert "LeanCTX" in out and "enabled" in out
+    assert "endpoint" in out and "lockdown" in out and "127.0.0.1" in out
+
+
+def test_cli_leanctx_disabled(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from secagent.cli import app
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SECAGENT_LEANCTX__ENABLED", "false")
+    r = CliRunner().invoke(app, ["leanctx"])
+    assert r.exit_code == 0, r.output
+    assert "disabled" in r.output.replace("\n", "")

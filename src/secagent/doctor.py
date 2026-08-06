@@ -579,6 +579,43 @@ def check_network(settings: Settings) -> Check:
     return Check("network", True, f"egress policy ok ({detail.strip()})")
 
 
+def check_leanctx(settings: Settings) -> Check:
+    """LeanCTX context-compression posture. Enforces the CUI-containment + air-gapped invariants:
+    a routable endpoint or enabled telemetry is an ERROR (LeanCTX sees prompt content); a missing
+    binary/SDK, an enabled persistent store, or an enabled update-check are WARNs. See
+    docs/leanctx.md."""
+    from . import leanctx as lc
+
+    cfg = settings.leanctx
+    if not cfg.enabled:
+        return Check("leanctx", True, "LeanCTX disabled (leanctx.enabled=false)", severity="info")
+    if not cfg.is_loopback:
+        return Check(
+            "leanctx", False,
+            f"endpoint {cfg.endpoint} is NOT loopback — LeanCTX sees CUI prompts and must bind "
+            "127.0.0.1 only. Set leanctx.endpoint to a loopback URL.", severity="error")
+    if cfg.telemetry:
+        return Check("leanctx", False,
+                     "telemetry is enabled — set leanctx.telemetry=false (CMMC/air-gapped).",
+                     severity="error")
+    warns: list[str] = []
+    if not lc.binary_installed():
+        warns.append("`lean-ctx` not on PATH — pi-side wire compression + ctx_* tools won't run "
+                     "(see docs/leanctx.md)")
+    if not lc.sdk_available():
+        warns.append("lean-ctx-client SDK absent — secagent's own-call compression passes through "
+                     "(pip install 'secagent[leanctx]')")
+    if cfg.persist_context:
+        warns.append("persistent context store ON — treat leanctx.state_dir as CUI at rest")
+    if not cfg.no_update_check:
+        warns.append("update-check enabled (phone-home) — set leanctx.no_update_check=true")
+    bits = (f"loopback {cfg.endpoint}, mode={cfg.pi_mode}, {cfg.proxy_history_mode}, "
+            f"hardened={cfg.harden}, persist={cfg.persist_context}")
+    if warns:
+        return Check("leanctx", True, f"on ({bits}); " + "; ".join(warns), severity="warn")
+    return Check("leanctx", True, f"on + locked down ({bits})", severity="info")
+
+
 def run_doctor(settings: Settings, probe_endpoint: bool = False) -> list[Check]:
     """Run all checks and return them in display order."""
     checks = [
@@ -596,6 +633,7 @@ def run_doctor(settings: Settings, probe_endpoint: bool = False) -> list[Check]:
         check_docs_extra(),
         check_pi_runtime(),
         check_node_runtime(),
+        check_leanctx(settings),
         check_onboarding(),
         check_user_login(settings),
         check_llm_endpoint(settings, probe_endpoint),

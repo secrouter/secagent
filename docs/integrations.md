@@ -10,6 +10,11 @@ secagent exposes its affordances two ways:
 Both cover the same ground. The MCP server is the portable one — if your agent speaks
 MCP, it needs no secagent-specific code.
 
+**Context compression.** secagent also integrates [LeanCTX](leanctx.md) — on by default, locked
+down — which adds `ctx_*` compression tools to pi and shrinks model requests (the agent's and
+secagent's own chat/review calls) before they reach SecRouter. See [LeanCTX](leanctx.md) for the
+security posture (loopback-only, no telemetry/phone-home, no CUI at rest by default).
+
 ## Install
 
 ```bash

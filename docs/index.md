@@ -37,6 +37,7 @@ git-scope
 gitlab-watch
 pi
 integrations
+leanctx
 architecture
 affordances
 ```

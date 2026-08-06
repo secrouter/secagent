@@ -16,8 +16,9 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urlsplit
 
 from .config import LeanCtxConfig
@@ -122,14 +123,17 @@ def wire_pi(cfg: LeanCtxConfig, *, runner: Callable[..., Any] | None = None) -> 
     the missing binary. ``runner`` (``(argv, env) -> completed``) is injectable for tests.
     """
     def _default_runner(argv: list[str], env: dict[str, str]) -> subprocess.CompletedProcess:
-        return subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120, check=False)
+        return subprocess.run(argv, env=env, capture_output=True, text=True,
+                              timeout=120, check=False)
 
     run = runner or _default_runner
     if not binary_installed():
         return ["lean-ctx not found — skipped pi wiring (install it, then re-run `secagent init`); "
                 "see docs/leanctx.md"]
     env = {**os.environ, **lockdown_env(cfg)}
-    init_argv = ["lean-ctx", "init", "--agent", "pi"] + (["--mode", "mcp"] if cfg.pi_enable_mcp else [])
+    init_argv = ["lean-ctx", "init", "--agent", "pi"]
+    if cfg.pi_enable_mcp:
+        init_argv += ["--mode", "mcp"]
     steps: list[str] = []
     for argv, label in ((init_argv, "registered LeanCTX with pi (lean-ctx init --agent pi)"),
                         (["lean-ctx", "harden"], "hardened LeanCTX (lean-ctx harden)")):

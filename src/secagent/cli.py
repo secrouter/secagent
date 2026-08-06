@@ -278,6 +278,40 @@ def init(
 
 
 @app.command()
+def leanctx(
+    config: str | None = typer.Option(None, "--config", help="Path to a secagent config YAML"),
+) -> None:
+    """Show the LeanCTX context-compression status — config, lockdown, and what's installed.
+
+    LeanCTX (see docs/leanctx.md) compresses the agent's + secagent's model requests before they
+    reach SecRouter. This is a read-only view; ``secagent doctor`` runs the health/lockdown check
+    that can actually fail a run.
+    """
+    from . import leanctx as lc
+
+    def mark(b: bool) -> str:
+        return "[green]yes[/green]" if b else "[red]no[/red]"
+
+    cfg = _settings(config).leanctx
+    console.print(f"[bold]LeanCTX[/bold]: {'enabled' if cfg.enabled else 'disabled'}")
+    if not cfg.enabled:
+        console.print("  leanctx.enabled=false — nothing installed/configured/routed through it")
+        return
+    console.print(f"  endpoint    {cfg.endpoint}   loopback={mark(cfg.is_loopback)}")
+    console.print(f"  pi mode     {cfg.pi_mode}   mcp tools={cfg.pi_enable_mcp}")
+    console.print(f"  own calls   compress={cfg.compress_own_calls}")
+    console.print(f"  persist     {cfg.persist_context}   state_dir={cfg.state_dir}")
+    console.print(f"  lockdown    no_update_check={cfg.no_update_check}  harden={cfg.harden}  "
+                  f"telemetry={cfg.telemetry}  history={cfg.proxy_history_mode}")
+    console.print(f"  versions    lean-ctx {cfg.version}   client {cfg.client_version}")
+    console.print(f"  binary      {mark(lc.binary_installed())}")
+    console.print(f"  sdk         {mark(lc.sdk_available())}")
+    cfg_toml = lc.config_toml_path()
+    present = "present" if cfg_toml.exists() else "absent — run `secagent init`"
+    console.print(f"  config      {cfg_toml}   ({present})")
+
+
+@app.command()
 def index(
     path: Path = typer.Argument(..., help="Repository root to index"),
     config: str | None = typer.Option(None, "--config", "-c"),
