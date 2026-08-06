@@ -681,6 +681,91 @@ class AuditConfig(BaseModel):
     capture_content: bool = False
 
 
+# Pinned LeanCTX versions (supply-chain — never floating). The `lean-ctx` binary and the
+# `pi-lean-ctx` npm extension track the same release; the Python client is versioned
+# separately. Bump deliberately, re-verifying against the deployed daemon.
+LEANCTX_VERSION = "3.9.17"          # lean-ctx binary + pi-lean-ctx (npm)
+LEANCTX_CLIENT_VERSION = "0.1.0"    # lean-ctx-client (PyPI — the SDK secagent imports)
+
+
+class LeanCtxConfig(BaseModel):
+    """LeanCTX context-compression integration (see docs/leanctx.md).
+
+    `LeanCTX <https://github.com/yvgude/lean-ctx>`_ (Apache-2.0) is a local
+    context-compression layer: agent-side ``ctx_*`` tools for pi, plus a wire compressor
+    that shrinks model requests before they reach SecRouter (typically far fewer tokens).
+    It is ON by default and **locked down for the CMMC/air-gapped posture** — every field
+    below defaults to the safe choice.
+
+    CUI note: LeanCTX sees prompt content, so it sits INSIDE the accreditation boundary.
+    Its endpoint is loopback-only, its update-check + telemetry are disabled, and its
+    persistent memory is OFF by default (nothing writes potential CUI to disk). It reuses
+    the suite's egress/audit posture (see :class:`NetworkConfig` / :class:`AuditConfig`)
+    rather than opening a new network path.
+    """
+
+    # Master switch. When false, secagent + pi run with NO LeanCTX at all — nothing is
+    # installed, configured, or routed through it, and behaviour is exactly as it was
+    # before this section existed (a clean kill-switch for a strict deployment).
+    enabled: bool = True
+
+    # LeanCTX's local daemon (its OpenAI-shaped /v1 HTTP API — what the SDK talks to and
+    # the wire proxy exposes). ALWAYS loopback: LeanCTX sees CUI, so it must never bind a
+    # routable address. ``secagent doctor`` flags a non-loopback host here (see is_loopback).
+    endpoint: str = "http://127.0.0.1:4444"
+
+    # pi tool exposure: "additive" keeps pi's builtins (read/bash/grep/…) alongside the
+    # ctx_* tools; "replace" exposes only the compressed ctx_* tools (LEAN_CTX_PI_MODE).
+    pi_mode: Literal["additive", "replace"] = "additive"
+
+    # Register LeanCTX's advanced MCP tools with pi (ctx_session/knowledge/semantic_search/
+    # repomap/callgraph/impact/pack). OFF by default: several read the persistent store
+    # (below) and widen the tool surface; the always-available CLI-backed ctx_* tools give
+    # the compression wins without it (LEAN_CTX_PI_ENABLE_MCP).
+    pi_enable_mcp: bool = False
+
+    # Compress secagent's OWN SecRouter calls (Mattermost chat bridge UC101, MR review
+    # UC100) through the local daemon before posting. Independent of the pi-side wire
+    # compression. GRACEFUL: if the daemon is unreachable the request is sent uncompressed
+    # rather than blocked — a compression outage must never drop a governed request.
+    compress_own_calls: bool = True
+
+    # PERSISTENT CONTEXT/KNOWLEDGE STORE (LeanCTX session + knowledge memory). OFF by
+    # default: enabling it writes (potentially CUI) context to disk on the secagent host —
+    # data at rest inside the accreditation boundary. When true, the store is kept under
+    # ``state_dir``, owner-only, and MUST be treated as CUI (marked, protected, in
+    # media-protection scope). See docs/cmmc.md.
+    persist_context: bool = False
+    # Where LeanCTX keeps its state (config + any enabled store), owner-only, inside the
+    # boundary. Also the base handed to LeanCTX so it never falls back to $HOME defaults.
+    state_dir: str = "~/.secagent/leanctx"
+
+    # ── suite-enforced lockdown (applied to LeanCTX's env/config by onboarding regardless;
+    #    surfaced here so ``secagent doctor`` can VERIFY them and fail loud on drift) ──
+    # Disable LeanCTX's update-check phone-home (LEAN_CTX_NO_UPDATE_CHECK=1). Air-gap-safe.
+    no_update_check: bool = True
+    # Apply ``lean-ctx harden`` / LEAN_CTX_HARDEN=1 — tightens the MCP config + shell surface.
+    harden: bool = True
+    # Keep LeanCTX telemetry OFF (it is opt-in upstream; the suite never enables it).
+    telemetry: bool = False
+    # Cache-aware history keeps the request prefix byte-stable so SecRouter/SecLLM prompt
+    # caching keeps hitting; NEVER "rolling" on a cached rail — it rewrites a stable message
+    # every turn, turning cheap cache reads into full-price writes (LEAN_CTX_PROXY_HISTORY_MODE).
+    proxy_history_mode: Literal["cache-aware", "rolling", "off"] = "cache-aware"
+
+    # Pinned versions — supply-chain control (never floating). See the module constants above.
+    version: str = LEANCTX_VERSION
+    client_version: str = LEANCTX_CLIENT_VERSION
+
+    @property
+    def is_loopback(self) -> bool:
+        """Whether ``endpoint`` is loopback-only — the CUI-containment invariant
+        ``secagent doctor`` enforces (a routable LeanCTX would expose CUI prompts)."""
+        from urllib.parse import urlsplit
+
+        return (urlsplit(self.endpoint).hostname or "") in ("127.0.0.1", "::1", "localhost")
+
+
 class Settings(BaseSettings):
     """Root settings object."""
 
@@ -691,6 +776,7 @@ class Settings(BaseSettings):
     )
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    leanctx: LeanCtxConfig = Field(default_factory=LeanCtxConfig)
     secsso: SecSSOConfig = Field(default_factory=SecSSOConfig)
     gitlab: GitLabConfig = Field(default_factory=GitLabConfig)
     mattermost: MattermostConfig = Field(default_factory=MattermostConfig)
@@ -808,6 +894,7 @@ def _pristine_dump() -> dict[str, Any]:
     return Settings.model_validate(
         {
             "llm": LLMConfig().model_dump(),
+            "leanctx": LeanCtxConfig().model_dump(),
             "secsso": SecSSOConfig().model_dump(),
             "gitlab": GitLabConfig().model_dump(),
             "mattermost": MattermostConfig().model_dump(),

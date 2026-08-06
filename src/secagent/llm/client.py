@@ -15,7 +15,8 @@ from typing import Any
 
 import httpx
 
-from ..config import LLMConfig
+from ..config import LeanCtxConfig, LLMConfig
+from ..leanctx import compress_messages
 from ..secretval import SecretResolutionError, resolve_secret
 
 log = logging.getLogger(__name__)
@@ -95,8 +96,15 @@ class LLMClient:
     ``MockTransport``); otherwise one is created from the config.
     """
 
-    def __init__(self, config: LLMConfig, http: httpx.Client | None = None) -> None:
+    def __init__(self, config: LLMConfig, http: httpx.Client | None = None,
+                 leanctx: LeanCtxConfig | None = None) -> None:
         self.config = config
+        # Optional LeanCTX compression of THIS client's requests. The governed conversational
+        # paths (MR review UC100, chat bridge UC101) pass ``settings.leanctx`` here; the tuned
+        # scan/testgen/docs paths deliberately do NOT (compression would alter their carefully
+        # measured prompts). ``None`` = no compression. Non-fatal by contract — a daemon outage
+        # passes messages through unchanged (see :func:`secagent.leanctx.compress_messages`).
+        self._leanctx = leanctx
         self._owns_http = http is None
         # base_url MUST end with "/" and request paths MUST be relative (no leading
         # "/"), otherwise httpx drops the base path component (e.g. the "/v1" suffix).
@@ -147,6 +155,9 @@ class LLMClient:
         deadline computed once here and shared by every attempt is what makes that true.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
+        # Compress via LeanCTX before posting (when configured) — no-op/pass-through otherwise.
+        if self._leanctx is not None:
+            messages = compress_messages(self._leanctx, messages, model=self.config.model)
         payload: dict[str, Any] = {
             "model": self.config.model,
             "messages": messages,

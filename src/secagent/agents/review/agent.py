@@ -97,7 +97,7 @@ def review_merge_request(
     owns_gl = gitlab is None
     owns_llm = llm is None
     gitlab = gitlab or GitLabClient(settings.gitlab)
-    llm = llm or LLMClient(settings.llm)
+    llm = llm or LLMClient(settings.llm, leanctx=settings.leanctx)
     try:
         mr = gitlab.get_merge_request(project, mr_iid)
         changes = gitlab.get_merge_request_changes(project, mr_iid)
@@ -190,7 +190,7 @@ def review_local_changes(
         scope = gitscope.since_base(repo_path, base=base)
 
     owns_llm = llm is None
-    llm = llm or LLMClient(settings.llm)
+    llm = llm or LLMClient(settings.llm, leanctx=settings.leanctx)
     try:
         meta = _local_meta(repo_path, scope)
         changes = scope.to_gitlab_style()
@@ -239,7 +239,7 @@ def respond_to_mention(
     owns_gl = gitlab is None
     owns_llm = llm is None
     gitlab = gitlab or GitLabClient(settings.gitlab)
-    llm = llm or LLMClient(settings.llm)
+    llm = llm or LLMClient(settings.llm, leanctx=settings.leanctx)
     try:
         mr = gitlab.get_merge_request(project, mr_iid)
         changes = gitlab.get_merge_request_changes(project, mr_iid)
