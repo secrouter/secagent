@@ -73,9 +73,9 @@ service-account tokens.
 |----------|---------------------------|--------|-------|
 | AC.L2-3.1.1 | Limit system access to authorized users/processes | 🏛 / 🟡 | Host/IdP enforce who runs secagent. The GitLab token scopes what the agent can do. |
 | AC.L2-3.1.2 | Limit access to permitted transactions/functions | 🟡 | Scope the GitLab token to the minimum (api/read+note); the LLM endpoint should be reachable only from secagent. |
-| AC.L2-3.1.3 | Control flow of CUI | ✅ 🟡 | Egress is limited to the configured LLM + GitLab + Mattermost endpoints (no telemetry). `network.allowed_hosts` adds an in-tool egress allow-list and `network.require_tls` refuses plaintext (CMMC-3, implemented; covers `mattermost.url` too); defense-in-depth at the network layer still recommended. |
+| AC.L2-3.1.3 | Control flow of CUI | ✅ 🟡 | Egress is limited to the configured LLM + GitLab endpoints (no telemetry). `network.allowed_hosts` adds an in-tool egress allow-list and `network.require_tls` refuses plaintext (CMMC-3, implemented); defense-in-depth at the network layer still recommended. |
 | AC.L2-3.1.5 | Least privilege | ✅ / 🟡 | Container runs as a non-root UID; extras are opt-in (`docs`/`review`). Use a least-privilege GitLab token. |
-| AC.L2-3.1.12 | Monitor/control remote access (review + chat webhooks) | ✅ 🟡 | Constant-time shared-token check (`X-Gitlab-Token` / Mattermost `token`), optional `webhook_allowed_ips`, and TLS/**mTLS** via `review serve` / `chat serve --tls-cert/--tls-key/--tls-ca` (CMMC-4). |
+| AC.L2-3.1.12 | Monitor/control remote access (review webhook) | ✅ 🟡 | Constant-time shared-token check (`X-Gitlab-Token`), optional `webhook_allowed_ips`, and TLS/**mTLS** via `review serve --tls-cert/--tls-key/--tls-ca` (CMMC-4). |
 | AC.L2-3.1.20 | Control connections to external systems | 🟡 | All external endpoints are explicit config; keep them in-boundary. |
 | AC.L2-3.1.22 | Control publicly-posted content | 🟡 | The reviewer posts to GitLab MRs; comments are signed and persona-limited. Restrict the bot to private projects. |
 | AC.L2-3.1.4/3.1.6-3.1.11, 3.1.13-3.1.19, 3.1.21 | Separation of duties, session lock, MFA-gated remote, mobile/wireless, etc. | 🏛 | Environment/IdP responsibilities; not applicable to the tool. |
@@ -97,19 +97,12 @@ SHA-256 **hash-chained** so insertion/deletion/edit is detectable. Enable via
 `audit.enabled`; verify with `secagent audit verify`; `secagent doctor` reports status and
 checks integrity. Disabled by default. Storage protection + SIEM correlation remain
 the environment's responsibility.
-
-Chat-driven actions (UC101, `AuditLogger.record_chat`) additionally carry `end_user` —
-the Mattermost user, distinct from the service `principal` — so a single bot principal
-doesn't collapse every person into one attribution. Message/reply text is CUI-sensitive:
-by default only its SHA-256 digest is recorded; `audit.capture_content` /
-`SECAGENT_AUDIT__CAPTURE_CONTENT=true` opts into recording the verbatim text, which tags
-the record `cui: true`.
 ```
 
 | Practice | Requirement | Status | Notes |
 |----------|-------------|--------|-------|
 | AU.L2-3.3.1 | Create/retain audit records to enable monitoring & investigation | ✅ 🟡 | Append-only JSONL of all agent/MCP actions when enabled. Retention/rotation is the environment's. |
-| AU.L2-3.3.2 | Ensure actions are traceable to individuals/processes | ✅ | Each record carries `principal` (service identity / `$SECAGENT_PRINCIPAL`) and a per-process `run_id`; chat-driven (UC101) records additionally carry `end_user`, the individual Mattermost user. |
+| AU.L2-3.3.2 | Ensure actions are traceable to individuals/processes | ✅ | Each record carries `principal` (service identity / `$SECAGENT_PRINCIPAL`) and a per-process `run_id`. |
 | AU.L2-3.3.4 | Alert on audit logging failure | 🟡 | Write failures degrade to stderr (captured by container logging); a dedicated alert hook is a future enhancement. |
 | AU.L2-3.3.8 | Protect audit info from unauthorized access/modification | ✅ 🏛 | Records are tamper-evident (hash chain; `audit verify`); at-rest protection + access control are the environment's (forward to SIEM, restrict perms). |
 | AU.L2-3.3.5/3.3.6 | Correlate & report | 🏛 | SIEM responsibility; JSONL is forwarder-friendly. |
@@ -155,7 +148,7 @@ the record `cui: true`.
 | MP.L2-3.8.1 | Protect (CUI) media, physical & digital | ✅ 🏛 | The store is created **owner-only** (`0700`/`0600`) and the audit log `0600` (CMMC-2). At-rest *encryption* is provided by full-disk/volume encryption (the accepted baseline control, inherited from the environment). |
 | MP.L2-3.8.3 | Sanitize media before disposal/reuse | ✅ 🟡 | `secagent purge` securely deletes the store (overwrite + unlink) (CMMC-2); overwrite is best-effort on CoW/SSD, so combine with platform sanitization. |
 | MP.L2-3.8.9 | Protect backups of CUI | 🏛 | Backup system responsibility. |
-| MP.L2-3.8.2/3.8.4-3.8.8 | Limit access, mark media, transport, removable media | 🏛 ✅ | Mostly environmental. CUI **marking** of generated docs (furo banner + footer) and MR comments is implemented via `marking.banner` (CMMC-6); audit records that capture verbatim chat content (`audit.capture_content: true`) are self-marked `cui: true` (CMMC-1). |
+| MP.L2-3.8.2/3.8.4-3.8.8 | Limit access, mark media, transport, removable media | 🏛 ✅ | Mostly environmental. CUI **marking** of generated docs (furo banner + footer) and MR comments is implemented via `marking.banner` (CMMC-6). |
 
 ## 3.9 Personnel Security (PS)
 

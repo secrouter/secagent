@@ -88,16 +88,6 @@ gitlab:
   webhook_allowed_ips: []   # CMMC-4: source-IP allow-list ([] = any); pair with mTLS
   poll_interval_s: 0   # >0 enables polling fallback for air-gapped instances
 
-mattermost:                  # UC101: `secagent chat serve` -- own transport, not pi-mattermost
-  url: ""                     # Mattermost server base URL, e.g. https://chat.example.com
-  bot_token: ""                # OUTBOUND: posts replies as the bot; prefer SECAGENT_MATTERMOST__BOT_TOKEN
-  team: ""                     # team name/ID the bot operates in
-  bot_username: "secagent"     # recognized mention prefix; ignores the bot's own posts
-  verify_tls: true
-  webhook_secret: ""           # INBOUND: the `token` Mattermost sends per slash command /
-                                #   outgoing webhook; prefer SECAGENT_MATTERMOST__WEBHOOK_SECRET
-  webhook_allowed_ips: []      # CMMC-4: source-IP allow-list ([] = any); pair with mTLS
-
 persona:
   profile: "config/alignment/default.yaml"
 
@@ -110,11 +100,8 @@ fips:
 audit:                       # CMMC-1 / NIST 800-171 AU: structured audit logging
   enabled: false             # enable in CMMC/CUI deployments
   path: ".secagent/audit/audit.jsonl"   # use an absolute, protected, SIEM-forwarded path
-  principal: ""              # SERVICE identity per event (falls back to $SECAGENT_PRINCIPAL);
-                              # chat events also carry a separate per-request end_user
+  principal: ""              # SERVICE identity per event (falls back to $SECAGENT_PRINCIPAL)
   echo_stderr: false         # also emit each record to stderr (container log capture)
-  capture_content: false     # chat (UC101) message/reply text: false = SHA-256 digest only
-                              # (CUI-free); true = verbatim text too, record tagged cui: true
 
 network:                     # CMMC-3 / NIST 800-171 AC.3.1.3, SC.3.13.6/.8
   require_tls: false         # refuse non-HTTPS endpoints (loopback is exempt)

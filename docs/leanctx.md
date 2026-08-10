@@ -14,7 +14,7 @@ shell/tool output and the model wire.
 | Layer | What compresses | Provided by | Runs |
 |---|---|---|---|
 | **pi tools + wire compressor** | the agent's file reads, shell/tool output, and its model requests before SecRouter | the `lean-ctx` binary + `pi-lean-ctx` extension | inside pi |
-| **secagent own-call compression** | secagent's *own* SecRouter requests — the Mattermost chat bridge (UC101) and MR review (UC100) | the `lean-ctx-client` SDK → the local daemon | inside secagent |
+| **secagent own-call compression** | secagent's *own* SecRouter requests — MR review (UC100) | the `lean-ctx-client` SDK → the local daemon | inside secagent |
 
 The tuned scan / testgen / docs prompts are deliberately **not** compressed — their prompts are
 measured and must not change.
@@ -50,7 +50,7 @@ Every option, with its locked-down default — see `secagent.config.LeanCtxConfi
 | `endpoint` | `http://127.0.0.1:4444` | Local daemon (loopback only). |
 | `pi_mode` | `additive` | `additive` (pi builtins + `ctx_*`) or `replace` (only `ctx_*`). |
 | `pi_enable_mcp` | `false` | Register LeanCTX's advanced MCP tools with pi. |
-| `compress_own_calls` | `true` | Compress secagent's own chat/review calls via the SDK. |
+| `compress_own_calls` | `true` | Compress secagent's own review calls via the SDK. |
 | `persist_context` | `false` | Persistent memory store (**CUI at rest** when on). |
 | `state_dir` | `~/.secagent/leanctx` | State location (owner-only). |
 | `no_update_check` | `true` | Disable the update phone-home. |

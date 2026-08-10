@@ -159,7 +159,7 @@ def sdk_available() -> bool:
 def compress_messages(cfg: LeanCtxConfig, messages: list[dict[str, Any]],
                       *, model: str) -> list[dict[str, Any]]:
     """Compress an OpenAI-style ``messages`` list via the local LeanCTX daemon before secagent
-    posts it to SecRouter (UC100/UC101). NON-FATAL by contract: if LeanCTX is disabled, its SDK
+    posts it to SecRouter (UC100). NON-FATAL by contract: if LeanCTX is disabled, its SDK
     isn't installed, or the daemon is unreachable/errors, the ORIGINAL messages are returned
     unchanged — a compression outage must never drop or corrupt a governed request.
 

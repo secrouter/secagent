@@ -225,37 +225,6 @@ not cached at client construction — so a refreshing `"!command"` value stays c
 `secagent doctor --probe`'s `llm_endpoint` check resolves it the same way before
 probing, rather than sending the literal `"!command"` string as a credential.
 
-### `mattermost`
-
-UC101: `secagent chat serve`, secagent's own transport (not the `pi-mattermost`
-plugin) for Mattermost slash commands and outgoing webhooks. Same hardening posture
-as `gitlab`: `chat serve` refuses to start without `webhook_secret` (or an explicit
-`webhook_allow_unauthenticated` opt-out), and supports the same `--tls-*` / mTLS
-options as `review serve`.
-
-```yaml
-mattermost:
-  url: ""                      # Mattermost server base URL, e.g. https://chat.example.com
-  bot_token: ""                # OUTBOUND: posts replies as the bot (prefer SECAGENT_MATTERMOST__BOT_TOKEN)
-  team: ""                     # team name/ID the bot operates in
-  bot_username: "secagent"     # recognized mention prefix; ignores the bot's own posts
-  verify_tls: true
-  webhook_secret: ""           # INBOUND: the `token` Mattermost sends per slash command/webhook
-  webhook_allowed_ips: []      # CMMC-4: source-IP allow-list ([] = any); pair with mTLS
-```
-
-```bash
-secagent chat serve --port 8070
-```
-
-`bot_token` and `webhook_secret` are two DIFFERENT secrets: `bot_token` authenticates
-secagent's own outbound REST calls to Mattermost (posting the reply); `webhook_secret`
-authenticates Mattermost's inbound deliveries to secagent (the shared `token` field
-Mattermost sends with every slash-command/outgoing-webhook POST). Every chat
-interaction is recorded via `AuditLogger.record_chat` with the invoking Mattermost
-user as `end_user` — distinct from the bot's own service `principal` — see `audit`
-below.
-
 ### `persona`
 
 Points at the review persona profile (alignment + verbosity). See {doc}`use-cases`.
@@ -297,29 +266,12 @@ audit:
   path: ".secagent/audit/audit.jsonl"    # use an absolute, protected, SIEM-forwarded path
   principal: ""                        # SERVICE identity per event (falls back to $SECAGENT_PRINCIPAL)
   echo_stderr: false                   # also emit each record to stderr
-  capture_content: false               # chat message/reply text: digest-only vs. verbatim
 ```
 
 ```{tip}
 Forward the log to your SIEM and restrict its file permissions — secagent makes records
 tamper-evident, but storage protection (AU.L2-3.3.8) is the environment's job.
 ```
-
-**Chat interactions (UC101).** A chat-driven action (`AuditLogger.record_chat`) carries a
-second identity, `end_user` — the Mattermost user who triggered it — kept distinct from
-`principal`, which stays the service/bot identity; one bot principal would otherwise
-collapse every user into a single attribution. Because the message/reply text is
-CUI-sensitive, `capture_content` (default `false`) decides how it is recorded:
-
-- `false` (default) — only a SHA-256 digest of the message/reply is recorded
-  (`target.message_sha256` / `target.reply_sha256`); the record contains no CUI.
-- `true` — the verbatim text is recorded too (`target.message` / `target.reply`), and
-  the whole record is tagged `cui: true` so it can be routed, retained, or
-  access-controlled as CUI downstream without inspecting `target`.
-
-Set via `SECAGENT_AUDIT__CAPTURE_CONTENT=true`, or per-call for one interaction
-regardless of the configured default. The hash chain and `verify_chain` cover chat
-records exactly like any other action.
 
 ### `network`
 

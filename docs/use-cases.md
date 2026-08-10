@@ -628,10 +628,10 @@ had nothing left to repair. The design and its safeguards are kept in
 
 ## Integrations (UC100-series)
 
-The 100-series are chat-ops / external-integration front ends over the same
-affordance-backed engines as UC0–UC5. Merge-request review (UC100) and Mattermost
-(UC101) both reach the reviewer/analysis engines through the audited MCP + affordance
-layer, so a change reviewed from GitLab and one requested from chat run identically.
+The 100-series are external-integration front ends over the same affordance-backed
+engines as UC0–UC5. Merge-request review (UC100) reaches the reviewer/analysis engines
+through the audited MCP + affordance layer, so a review driven from GitLab and one run
+locally behave identically.
 
 ## UC100 — GitLab merge-request review
 
@@ -713,47 +713,3 @@ use_affordances: true
 
 Point `persona.profile` at another file (e.g. `security-strict.yaml`) to switch
 stance.
-
-## UC101 — Mattermost interaction
-
-Drive SecAgent from a Mattermost channel: mention the bot (or use a slash command) to
-kick off a review or an affordance query, and it replies in-thread with the result —
-the same engines as UC100/UC0, reachable from chat. **secagent's own transport** — a
-small FastAPI receiver for Mattermost slash-command and outgoing-webhook deliveries —
-not the `pi-mattermost` plugin.
-
-```bash
-secagent chat serve --port 8070   # receives Mattermost events, dispatches, replies
-```
-
-Setup: register a Mattermost bot account (its token is `mattermost.bot_token`), then
-configure **either** a custom slash command (works in any channel, including DMs with
-the bot) **or** an outgoing webhook (trigger word, e.g. `@secagent`, scoped to a
-channel) pointing at `https://<host>:8070/webhook`, with the request token matching
-`mattermost.webhook_secret`. Both deliveries carry the invoking user's identity
-(`user_id`/`user_name`) directly in the payload.
-
-```
-/secagent review mygroup/myproject 42     # slash command
-@secagent structure /path/to/repo         # outgoing webhook (trigger word)
-```
-
-`review <project> <mr_iid>` generates a UC100 review and replies with it directly
-(without also posting to GitLab — the chat reply *is* the delivery for that
-invocation). `structure <repo-path>` returns the UC1 affordance structure outline.
-`help` lists commands.
-
-**Hardening.** Same posture as UC100: `chat serve` refuses to start without
-`mattermost.webhook_secret` (fail-closed, matching `review serve`'s
-`gitlab.webhook_secret` contract exactly), an optional source-IP allow-list
-(`mattermost.webhook_allowed_ips`), and TLS/mTLS via `--tls-cert`/`--tls-key`/`--tls-ca`.
-Every chat-triggered action is recorded via `AuditLogger.record_chat` — see
-{doc}`configuration` "audit" — carrying the invoking Mattermost user as `end_user`
-(distinct from the bot's own service `principal`), the channel/thread, and either a
-SHA-256 digest or (when `audit.capture_content=true`) the verbatim message/reply, the
-same tamper-evident hash chain as every other audit record.
-
-> **Status:** implemented — `secagent chat serve` is secagent's own transport, not
-> dependent on **SecChat** or `pi-mattermost`. Currently routes `review` (UC100) and
-> `structure` (UC1 affordances); wiring in more use-case verbs (`scan`, `analyze`,
-> `testgen`) is straightforward follow-on work in `chat/router.py`, not a redesign.

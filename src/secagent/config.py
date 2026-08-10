@@ -181,37 +181,6 @@ class GitLabConfig(BaseModel):
     poll_state_file: str = ".secagent/review-seen.json"
 
 
-class MattermostConfig(BaseModel):
-    """UC101: Mattermost chat-ops front end (``secagent chat serve``).
-
-    secagent's own transport (not the ``pi-mattermost`` plugin): a small FastAPI
-    receiver accepting Mattermost slash-command and outgoing-webhook deliveries,
-    replying in-thread via the REST API as the ``secagent`` bot. Same hardening
-    posture as ``gitlab`` (fail-closed webhook auth, constant-time token compare,
-    optional source-IP allow-list, TLS/mTLS via ``chat serve --tls-*``).
-    """
-
-    # Mattermost server base URL, e.g. https://chat.example.com (no trailing /api/v4).
-    url: str = ""
-    # Bot/personal access token for OUTBOUND REST calls (posting replies). Distinct
-    # from webhook_secret below, which authenticates INBOUND deliveries. Never logged.
-    bot_token: str = ""
-    # Team name/ID the bot operates in (informational; also used to sanity-check an
-    # inbound payload's team_domain/team_id when present).
-    team: str = ""
-    # Recognized mention prefix; also used to ignore the bot's own posts.
-    bot_username: str = "secagent"
-    verify_tls: bool = True
-    # Shared `token` Mattermost sends with every slash-command/outgoing-webhook
-    # delivery. `chat serve` refuses to start if this is empty, unless
-    # webhook_allow_unauthenticated is set — the same fail-closed contract as
-    # gitlab.webhook_secret (a missing/empty secret used to mean "accept everything").
-    webhook_secret: str = ""
-    webhook_allow_unauthenticated: bool = False
-    # Optional source-IP allow-list for the webhook ([] = allow any source).
-    webhook_allowed_ips: list[str] = Field(default_factory=list)
-
-
 class AffordanceConfig(BaseModel):
     """Affordance-engine behaviour."""
 
@@ -665,20 +634,10 @@ class AuditConfig(BaseModel):
     # Path to the JSONL audit log (use an absolute, protected, SIEM-forwarded path).
     path: str = ".secagent/audit/audit.jsonl"
     # Identity recorded in each event; falls back to $SECAGENT_PRINCIPAL. This is the
-    # SERVICE/process identity (e.g. "service:secagent-bot"), not the end user — chat
-    # interactions (UC101) additionally carry a per-request `end_user` (the Mattermost
-    # username), recorded via AuditLogger.record_chat, so one bot principal does not
-    # collapse many different people into a single attribution.
+    # SERVICE/process identity (e.g. "service:secagent").
     principal: str = ""
     # Also echo each record to stderr (useful for container log collection).
     echo_stderr: bool = False
-    # Chat interaction content (the user's message, the bot's reply) is CUI-sensitive.
-    # False (default): AuditLogger.record_chat writes only a SHA-256 digest of each —
-    # CUI-free, safe to forward to an unrestricted SIEM. True: the verbatim text is
-    # recorded too, and the record is tagged `cui: true` so it can be routed, retained,
-    # or access-controlled as CUI downstream. Only affects record_chat; every other
-    # event type never carries message content either way.
-    capture_content: bool = False
 
 
 # Pinned LeanCTX versions (supply-chain — never floating). The `lean-ctx` binary and the
@@ -724,10 +683,10 @@ class LeanCtxConfig(BaseModel):
     # the compression wins without it (LEAN_CTX_PI_ENABLE_MCP).
     pi_enable_mcp: bool = False
 
-    # Compress secagent's OWN SecRouter calls (Mattermost chat bridge UC101, MR review
-    # UC100) through the local daemon before posting. Independent of the pi-side wire
-    # compression. GRACEFUL: if the daemon is unreachable the request is sent uncompressed
-    # rather than blocked — a compression outage must never drop a governed request.
+    # Compress secagent's OWN SecRouter calls (MR review UC100) through the local daemon
+    # before posting. Independent of the pi-side wire compression. GRACEFUL: if the daemon
+    # is unreachable the request is sent uncompressed rather than blocked — a compression
+    # outage must never drop a governed request.
     compress_own_calls: bool = True
 
     # PERSISTENT CONTEXT/KNOWLEDGE STORE (LeanCTX session + knowledge memory). OFF by
@@ -779,7 +738,6 @@ class Settings(BaseSettings):
     leanctx: LeanCtxConfig = Field(default_factory=LeanCtxConfig)
     secsso: SecSSOConfig = Field(default_factory=SecSSOConfig)
     gitlab: GitLabConfig = Field(default_factory=GitLabConfig)
-    mattermost: MattermostConfig = Field(default_factory=MattermostConfig)
     affordances: AffordanceConfig = Field(default_factory=AffordanceConfig)
     diagrams: DiagramsConfig = Field(default_factory=DiagramsConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
@@ -800,10 +758,6 @@ class Settings(BaseSettings):
             data["gitlab"]["token"] = "***"
         if data.get("gitlab", {}).get("webhook_secret"):
             data["gitlab"]["webhook_secret"] = "***"
-        if data.get("mattermost", {}).get("bot_token"):
-            data["mattermost"]["bot_token"] = "***"
-        if data.get("mattermost", {}).get("webhook_secret"):
-            data["mattermost"]["webhook_secret"] = "***"
         # secsso holds no secret value itself (client_secret_env is only a variable
         # NAME — see SecSSOConfig), so there is nothing to redact there.
         return data
@@ -897,7 +851,6 @@ def _pristine_dump() -> dict[str, Any]:
             "leanctx": LeanCtxConfig().model_dump(),
             "secsso": SecSSOConfig().model_dump(),
             "gitlab": GitLabConfig().model_dump(),
-            "mattermost": MattermostConfig().model_dump(),
             "affordances": AffordanceConfig().model_dump(),
             "diagrams": DiagramsConfig().model_dump(),
             "persona": PersonaConfig().model_dump(),

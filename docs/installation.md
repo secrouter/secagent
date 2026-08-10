@@ -12,7 +12,7 @@ secagent login                              # 3. authenticate as yourself
 
 No root, no `systemd`, nothing written outside your home directory. If you're
 deploying secagent as a shared, unattended **service** instead (a bot account, a
-GitLab-review webhook, a chat-ops server) see [How this differs from a SecDeploy
+GitLab-review webhook) see [How this differs from a SecDeploy
 install](#how-this-differs-from-a-secdeploy-service-install) below — that path is
 different from this one.
 
@@ -230,8 +230,8 @@ under your `$HOME`, and every request carries *your own* identity because you ra
 `secagent login`.
 
 A SecDeploy-managed install (see `secdeploy`'s `fedora-fips` target) is the opposite
-shape: secagent runs as an unattended **service** — `secagent chat serve`, `secagent
-review serve` — under a dedicated service account (`svc-secagent`), installed to
+shape: secagent runs as an unattended **service** — `secagent review serve` — under a
+dedicated service account (`svc-secagent`), installed to
 `/etc/secsuite/` on a managed host, with `SECAGENT_LLM__API_KEY=!secagent token`
 (**no** `--user`: the client-credentials service identity, a shared secret provisioned
 out of band, never an interactive login). There is no `secagent login` step in that

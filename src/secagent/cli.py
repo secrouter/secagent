@@ -30,14 +30,12 @@ aff_app = typer.Typer(
     help="Affordance queries (bash-callable; the surface the pi agent drives)."
 )
 audit_app = typer.Typer(help="Audit log operations (CMMC-1 / NIST 800-171 AU).")
-chat_app = typer.Typer(help="Use case 101: Mattermost chat-ops front end.")
 app.add_typer(docs_app, name="docs")
 app.add_typer(review_app, name="review")
 app.add_typer(analyze_app, name="analyze")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(aff_app, name="affordance")
 app.add_typer(audit_app, name="audit")
-app.add_typer(chat_app, name="chat")
 
 console = Console()
 # Informational lines that must never land in a piped/redirected result (a JSON
@@ -1212,30 +1210,6 @@ def review_poll(
     state_path = Path(repo or ".") / settings.gitlab.poll_state_file
     poll_open_merge_requests(settings, project, repo=repo, once=once,
                              state_path=state_path)
-
-
-@chat_app.command("serve")
-def chat_serve(
-    config: str | None = typer.Option(None, "--config", "-c"),
-    host: str = typer.Option("0.0.0.0", "--host"),
-    port: int = typer.Option(8070, "--port"),
-    tls_cert: str | None = typer.Option(None, "--tls-cert", help="Server cert (enables HTTPS)"),
-    tls_key: str | None = typer.Option(None, "--tls-key", help="Server private key"),
-    tls_ca: str | None = typer.Option(None, "--tls-ca", help="Client CA (enables mTLS)"),
-) -> None:
-    """Run the Mattermost bot: receive slash commands + outgoing webhooks, route to
-    the review/affordance engines, reply in-thread, audit every interaction.
-
-    secagent's own transport (not the pi-mattermost plugin) — mirrors ``review
-    serve``'s hardening posture exactly: refuses to start without
-    ``mattermost.webhook_secret`` (or an explicit unauthenticated opt-out), and
-    supports the same ``--tls-*`` / mTLS options.
-    """
-    from .chat.webhook import serve
-
-    settings = _settings(config)
-    serve(settings, host=host, port=port,
-          tls_certfile=tls_cert, tls_keyfile=tls_key, tls_ca_certs=tls_ca)
 
 
 @mcp_app.command("affordances")

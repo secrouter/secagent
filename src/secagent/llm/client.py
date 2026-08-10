@@ -100,7 +100,7 @@ class LLMClient:
                  leanctx: LeanCtxConfig | None = None) -> None:
         self.config = config
         # Optional LeanCTX compression of THIS client's requests. The governed conversational
-        # paths (MR review UC100, chat bridge UC101) pass ``settings.leanctx`` here; the tuned
+        # path (MR review UC100) passes ``settings.leanctx`` here; the tuned
         # scan/testgen/docs paths deliberately do NOT (compression would alter their carefully
         # measured prompts). ``None`` = no compression. Non-fatal by contract — a daemon outage
         # passes messages through unchanged (see :func:`secagent.leanctx.compress_messages`).
