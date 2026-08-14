@@ -374,14 +374,15 @@ def run_init(
     config_backup = _write_user_config(cfg_path, peers, model, domain, force)
 
     # LeanCTX (on by default): write its locked-down config.toml + best-effort pi wiring. Skipped
-    # when disabled or not passed; wire_pi is non-fatal (a missing binary never aborts init).
+    # when disabled or not passed; install_pi_extension is non-fatal (a missing binary never aborts
+    # init) and NEVER wraps the operator's shell/Claude Code — LeanCTX attaches only at pi launch.
     lc_path: Path | None = None
     lc_steps: list[str] = []
     if leanctx is not None and leanctx.enabled:
         from . import leanctx as _leanctx
 
         lc_path = _leanctx.write_config(leanctx, leanctx_config_path)
-        lc_steps = _leanctx.wire_pi(leanctx)
+        lc_steps = _leanctx.install_pi_extension(leanctx)
 
     return InitResult(
         models_json_path=models_path,

@@ -18,7 +18,7 @@ def test_defaults_are_on_and_locked_down():
     assert lc.is_loopback                           # 127.0.0.1 — LeanCTX sees CUI, stays local
     assert lc.persist_context is False              # no CUI written to disk by default
     assert lc.no_update_check is True               # air-gapped: no update phone-home
-    assert lc.harden is True                         # `lean-ctx harden`
+    assert lc.harden is True                         # LEAN_CTX_HARDEN=1 per launched pi process
     assert lc.telemetry is False
     assert lc.proxy_history_mode == "cache-aware"    # keeps SecRouter/SecLLM prompt cache hitting
     assert lc.pi_mode == "additive"
