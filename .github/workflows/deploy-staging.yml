@@ -1,0 +1,85 @@
+# Push-button staging deploy: bake any secagent ref into the SecChat pool image.
+#
+# Run it from the Actions tab ("Run workflow" → type a branch / tag / sha), or push a v* tag.
+# Everything happens on GitHub's cloud runners: build the wheel, layer it onto
+# ghcr.io/secrouter/secchat-runnerd:base (published by secchat's publish-runnerd workflow),
+# smoke-test offline, and push ghcr.io/secrouter/secchat-runnerd-pool:pool. The staging box
+# runs NO self-hosted runner — a fixed operator-owned poller there pulls the new image into
+# k3s within a minute and posts a notice in SecChat. New pool sessions then run this build;
+# already-running sessions keep the previous image until they end (≤1h TTL).
+#
+# Rollback = re-run with the previous sha (the :pool-<sha12> tags in GHCR are the history;
+# the deploy notices in #staging-deploys quote them).
+name: deploy-staging
+run-name: "deploy ${{ inputs.ref || github.ref_name }} by @${{ github.actor }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "secagent ref to deploy (branch / tag / sha)"
+        required: true
+        default: main
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false   # let a running deploy finish; queued duplicates collapse
+
+env:
+  POOL_IMAGE: ghcr.io/secrouter/secchat-runnerd-pool
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref_name }}
+
+      - name: Resolve build metadata
+        id: meta
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "sha12=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the pool image
+        run: |
+          docker build -f docker/staging-pool.Dockerfile \
+            --build-arg SECAGENT_REF="${{ inputs.ref || github.ref_name }}" \
+            --build-arg SECAGENT_SHA="${{ steps.meta.outputs.sha }}" \
+            --build-arg SECAGENT_VERSION="${{ steps.meta.outputs.version }}" \
+            --build-arg BUILT_AT="$(date -u -Iseconds)" \
+            --build-arg DEPLOYED_BY="${{ github.actor }}" \
+            -t "$POOL_IMAGE:pool" \
+            -t "$POOL_IMAGE:pool-${{ steps.meta.outputs.sha12 }}" \
+            .
+
+      - name: Smoke test (offline, like the pods)
+        run: |
+          docker run --rm --network none "$POOL_IMAGE:pool" secagent version
+          {
+            echo '## Deployed to staging pool'
+            echo '```'
+            docker run --rm --network none "$POOL_IMAGE:pool" cat /etc/secagent-deployed
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish
+        run: |
+          docker push "$POOL_IMAGE:pool-${{ steps.meta.outputs.sha12 }}"
+          docker push "$POOL_IMAGE:pool"
+          echo "The staging poller picks this up within ~1 minute." >> "$GITHUB_STEP_SUMMARY"
