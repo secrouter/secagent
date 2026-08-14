@@ -29,7 +29,9 @@ default. `secagent doctor` verifies these and fails on the ones marked ⛔:
 - ⛔ **No telemetry** — off by default upstream; the suite keeps it off (`leanctx.telemetry=false`).
 - **No phone-home** — the update-check is disabled (`LEAN_CTX_NO_UPDATE_CHECK=1`), so it never
   reaches the network.
-- **Hardened** — `lean-ctx harden` (`LEAN_CTX_HARDEN=1`) tightens its MCP config + shell surface.
+- **Hardened per process** — each pi that secagent launches gets `LEAN_CTX_HARDEN=1`, tightening its
+  MCP config + shell surface **for that process**. This is no longer the global `lean-ctx harden`
+  CLI (which wrapped the operator's shell + Claude Code) — LeanCTX attaches only at pi-launch time.
 - **No CUI at rest** — the persistent context/knowledge store is **off** by default
   (`leanctx.persist_context=false`); nothing writes prompt-derived context to disk. Turning it on
   (for LeanCTX's memory features) keeps the store under `leanctx.state_dir`, owner-only — **treat it
@@ -54,7 +56,7 @@ Every option, with its locked-down default — see `secagent.config.LeanCtxConfi
 | `persist_context` | `false` | Persistent memory store (**CUI at rest** when on). |
 | `state_dir` | `~/.secagent/leanctx` | State location (owner-only). |
 | `no_update_check` | `true` | Disable the update phone-home. |
-| `harden` | `true` | Apply `lean-ctx harden`. |
+| `harden` | `true` | Set `LEAN_CTX_HARDEN=1` on each launched pi process (not a host-wide wrap). |
 | `telemetry` | `false` | Never enable telemetry. |
 | `proxy_history_mode` | `cache-aware` | Keep the SecRouter prompt cache hitting. |
 | `version` / `client_version` | pinned | Supply-chain pins (`lean-ctx` / `lean-ctx-client`). |
@@ -81,13 +83,36 @@ pip install 'secagent[leanctx]'                          # the SDK (own-call com
 ```
 
 `secagent init` writes the locked-down `~/.config/lean-ctx/config.toml` (`0600`) and best-effort
-runs `lean-ctx init --agent pi` + `lean-ctx harden` with the lockdown env applied. A missing binary
+**installs** the pi extension (`lean-ctx init --agent pi`), then immediately **de-registers it from
+pi's global `settings.json`** so a bare host `pi` never auto-loads it. It deliberately does **not**
+run `lean-ctx harden` and does **not** wrap the operator's shell or Claude Code. A missing binary
 never fails init — it's reported, the config is still written, and `secagent doctor` flags it.
+
+## Launching pi (the integration point)
+
+LeanCTX attaches to pi **at launch**, never as a host-wide install — so it rides along only on the
+pi processes secagent (or SecChat's gated runner) actually starts, per "LeanCTX only for
+pi-with-secagent":
+
+```bash
+secagent pi run -- --mode rpc      # execs pi with `-e <pi-lean-ctx>` + the LEAN_CTX_* lockdown env
+```
+
+Under the hood the launcher adds two things to that one process (see `secagent.leanctx`):
+
+- `pi_launch_args()` → `-e <…/pi-lean-ctx/extensions/index.ts>` (loads regardless of pi's
+  `--no-extensions`, since it's an explicitly-named extension — the same mechanism SecChat's runner
+  uses to add the extension alongside its execute-gate).
+- `lockdown_env()` → the `LEAN_CTX_*` env (incl. `LEAN_CTX_HARDEN=1`), scoped to that process.
+
+When LeanCTX is disabled or the extension isn't installed, pi still launches — just without the
+`-e` (a clean no-LeanCTX fallback). Other launchers (e.g. SecChat's container runner) reuse the same
+contract: point `SECAGENT_PI_LEANCTX_EXTENSION` at the extension and pass the lockdown env at spawn.
 
 ## Verify
 
 ```bash
-secagent leanctx     # config + lockdown + what's installed (read-only)
+secagent leanctx     # config + lockdown + what's installed, incl. the pi extension (read-only)
 secagent doctor      # runs the `leanctx` health check (loopback/telemetry are hard failures)
 ```
 

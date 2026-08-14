@@ -703,7 +703,10 @@ class LeanCtxConfig(BaseModel):
     #    surfaced here so ``secagent doctor`` can VERIFY them and fail loud on drift) ──
     # Disable LeanCTX's update-check phone-home (LEAN_CTX_NO_UPDATE_CHECK=1). Air-gap-safe.
     no_update_check: bool = True
-    # Apply ``lean-ctx harden`` / LEAN_CTX_HARDEN=1 — tightens the MCP config + shell surface.
+    # Set ``LEAN_CTX_HARDEN=1`` on each launched pi process — tightens the MCP config + shell
+    # surface FOR THAT PROCESS. Note: this no longer runs the global ``lean-ctx harden`` CLI (which
+    # wrapped the operator's shell + Claude Code); LeanCTX now attaches only at pi-launch time
+    # (see leanctx.launch_pi / pi_launch_args), never as a host-wide mutation.
     harden: bool = True
     # Keep LeanCTX telemetry OFF (it is opt-in upstream; the suite never enables it).
     telemetry: bool = False

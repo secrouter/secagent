@@ -122,15 +122,17 @@ def test_client_does_not_compress_without_leanctx(monkeypatch):
     assert calls["n"] == 0   # leanctx=None → compressor never invoked (tuned paths unaffected)
 
 
-# ── wire_pi (best-effort pi registration) ────────────────────────────────────────────────────
-def test_wire_pi_skips_when_binary_absent(monkeypatch):
+# ── install_pi_extension (launch-time model: install, scope, NEVER harden the operator) ───────
+def test_install_pi_extension_skips_when_binary_absent(monkeypatch):
     monkeypatch.setattr(leanctx, "binary_installed", lambda: False)
-    steps = leanctx.wire_pi(LeanCtxConfig())
+    steps = leanctx.install_pi_extension(LeanCtxConfig())
     assert len(steps) == 1 and "not found" in steps[0]   # non-fatal skip
 
 
-def test_wire_pi_runs_init_and_harden_with_lockdown_env(monkeypatch):
+def test_install_pi_extension_installs_but_never_hardens(monkeypatch):
     monkeypatch.setattr(leanctx, "binary_installed", lambda: True)
+    # No global auto-load to remove (isolate the CLI call), so _deregister is a no-op here.
+    monkeypatch.setattr(leanctx, "_deregister_global_pi_extension", lambda: [])
     calls: list = []
 
     class _R:
@@ -140,12 +142,78 @@ def test_wire_pi_runs_init_and_harden_with_lockdown_env(monkeypatch):
         calls.append((argv, env))
         return _R()
 
-    steps = leanctx.wire_pi(LeanCtxConfig(), runner=runner)
+    leanctx.install_pi_extension(LeanCtxConfig(), runner=runner)
+    # ONE install call, and CRUCIALLY never `lean-ctx harden` (the operator-wrapping step).
+    assert len(calls) == 1
     assert calls[0][0] == ["lean-ctx", "init", "--agent", "pi"]
-    assert calls[1][0] == ["lean-ctx", "harden"]
+    assert ["lean-ctx", "harden"] not in [c[0] for c in calls]
     assert calls[0][1]["LEAN_CTX_NO_UPDATE_CHECK"] == "1"   # lockdown env carried into the CLI
-    assert calls[0][1]["LEAN_CTX_HARDEN"] == "1"
-    assert len(steps) == 2
+
+
+def test_install_pi_extension_deregisters_global_autoload(monkeypatch, tmp_path):
+    monkeypatch.setattr(leanctx, "binary_installed", lambda: True)
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"packages": ["npm:pi-lean-ctx", "npm:something-else"]}))
+    rule = tmp_path / "lean-ctx.md"
+    rule.write_text("rules")
+    monkeypatch.setattr(leanctx, "PI_SETTINGS_JSON", settings)
+    monkeypatch.setattr(leanctx, "PI_GLOBAL_RULE", rule)
+
+    class _R:
+        returncode = 0
+
+    leanctx.install_pi_extension(LeanCtxConfig(), runner=lambda argv, env: _R())
+    left = json.loads(settings.read_text())["packages"]
+    assert "npm:pi-lean-ctx" not in left     # no longer auto-loaded by a bare pi
+    assert "npm:something-else" in left       # unrelated entries untouched
+    assert not rule.exists()                  # global rule drop removed
+
+
+def test_wire_pi_is_back_compat_alias():
+    assert leanctx.wire_pi is leanctx.install_pi_extension
+
+
+# ── launch-time contract: pi_extension_entry / pi_launch_args / launch_pi ─────────────────────
+def test_pi_extension_entry_honours_override_and_existence(tmp_path):
+    ext = tmp_path / "index.ts"
+    assert leanctx.pi_extension_entry({"SECAGENT_PI_LEANCTX_EXTENSION": str(ext)}) is None  # absent
+    ext.write_text("// ext")
+    assert leanctx.pi_extension_entry({"SECAGENT_PI_LEANCTX_EXTENSION": str(ext)}) == ext
+
+
+def test_pi_launch_args_adds_e_flag_only_when_installed(tmp_path):
+    ext = tmp_path / "index.ts"
+    ext.write_text("// ext")
+    env = {"SECAGENT_PI_LEANCTX_EXTENSION": str(ext)}
+    assert leanctx.pi_launch_args(LeanCtxConfig(), env=env) == ["-e", str(ext)]
+    assert leanctx.pi_launch_args(LeanCtxConfig(enabled=False), env=env) == []  # kill-switch
+    missing = {"SECAGENT_PI_LEANCTX_EXTENSION": str(tmp_path / "nope.ts")}
+    assert leanctx.pi_launch_args(LeanCtxConfig(), env=missing) == []            # not installed
+
+
+def test_launch_pi_builds_argv_with_extension_and_lockdown_env(tmp_path, monkeypatch):
+    ext = tmp_path / "index.ts"
+    ext.write_text("// ext")
+    monkeypatch.setenv("SECAGENT_PI_LEANCTX_EXTENSION", str(ext))
+    captured: dict = {}
+
+    def fake_exec(pi_bin, argv, env):
+        captured.update(pi_bin=pi_bin, argv=argv, env=env)
+
+    argv = leanctx.launch_pi(LeanCtxConfig(), ["--mode", "rpc"], exec_fn=fake_exec)
+    assert argv == ["pi", "-e", str(ext), "--mode", "rpc"]
+    assert captured["env"]["LEAN_CTX_HARDEN"] == "1"          # per-process lockdown, not host-wide
+    assert captured["env"]["LEAN_CTX_NO_UPDATE_CHECK"] == "1"
+
+
+def test_launch_pi_without_leanctx_still_runs_pi(tmp_path, monkeypatch):
+    monkeypatch.delenv("SECAGENT_PI_LEANCTX_EXTENSION", raising=False)
+    monkeypatch.setattr(leanctx, "DEFAULT_PI_EXTENSION", tmp_path / "nope.ts")
+    captured: dict = {}
+    leanctx.launch_pi(LeanCtxConfig(enabled=False), ["-x"],
+                      exec_fn=lambda b, a, e: captured.update(argv=a, env=e))
+    assert captured["argv"] == ["pi", "-x"]                   # no -e, pi still launches
+    assert "LEAN_CTX_HARDEN" not in captured["env"]           # disabled → no lockdown env
 
 
 # ── onboarding: run_init writes the locked-down config.toml ───────────────────────────────────
@@ -264,3 +332,25 @@ def test_cli_leanctx_disabled(tmp_path, monkeypatch):
     r = CliRunner().invoke(app, ["leanctx"])
     assert r.exit_code == 0, r.output
     assert "disabled" in r.output.replace("\n", "")
+
+
+# ── CLI: `secagent pi run` launches pi with LeanCTX, passing args through ──────────────────────
+def test_cli_pi_run_launches_with_passthrough_args(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from secagent import leanctx as lc
+    from secagent.cli import app
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    ext = tmp_path / "index.ts"
+    ext.write_text("// ext")
+    monkeypatch.setenv("SECAGENT_PI_LEANCTX_EXTENSION", str(ext))
+    captured: dict = {}
+    # Stop the real exec; capture what launch_pi would have run.
+    monkeypatch.setattr(lc, "launch_pi",
+                        lambda cfg, pi_args, **kw: captured.update(pi_args=pi_args, **kw))
+
+    r = CliRunner().invoke(app, ["pi", "run", "--", "--mode", "rpc", "--name", "x"])
+    assert r.exit_code == 0, r.output
+    assert captured["pi_args"] == ["--mode", "rpc", "--name", "x"]   # passed straight through
+    assert captured["pi_bin"] == "pi"

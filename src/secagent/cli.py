@@ -30,12 +30,14 @@ aff_app = typer.Typer(
     help="Affordance queries (bash-callable; the surface the pi agent drives)."
 )
 audit_app = typer.Typer(help="Audit log operations (CMMC-1 / NIST 800-171 AU).")
+pi_app = typer.Typer(help="Launch the pi coding agent with LeanCTX + secagent wired in.")
 app.add_typer(docs_app, name="docs")
 app.add_typer(review_app, name="review")
 app.add_typer(analyze_app, name="analyze")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(aff_app, name="affordance")
 app.add_typer(audit_app, name="audit")
+app.add_typer(pi_app, name="pi")
 
 console = Console()
 # Informational lines that must never land in a piped/redirected result (a JSON
@@ -307,6 +309,39 @@ def leanctx(
     cfg_toml = lc.config_toml_path()
     present = "present" if cfg_toml.exists() else "absent — run `secagent init`"
     console.print(f"  config      {cfg_toml}   ({present})")
+    entry = lc.pi_extension_entry()
+    console.print(f"  pi ext      {mark(entry is not None)}"
+                  + (f"   {entry}" if entry is not None else "   run `secagent init`"))
+
+
+@pi_app.command(
+    "run",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    help="Launch pi with LeanCTX attached FOR THIS PROCESS (never a host-wide wrap). Any args "
+         "after `--` pass straight through to pi, e.g. `secagent pi run -- --mode rpc`.",
+)
+def pi_run(
+    ctx: typer.Context,
+    config: str | None = typer.Option(None, "--config", "-c", help="Path to config YAML"),
+    pi_bin: str = typer.Option("pi", "--pi-bin", help="pi binary to exec (or PATH name)"),
+) -> None:
+    """Exec the pi coding agent with LeanCTX wired in at LAUNCH TIME: the pi-lean-ctx extension via
+    ``-e`` plus the ``LEAN_CTX_*`` lockdown env, scoped to this one process. This is the sanctioned
+    "secagent launches pi with LeanCTX configured" path — nothing is installed into, or hardened on,
+    the operator's shell or Claude Code. When LeanCTX is disabled/uninstalled, pi still launches,
+    just without the ``-e`` (clean fallback).
+
+    Replaces the current process with pi (``os.execvpe``), so its exit code + signals pass through.
+    """
+    from . import leanctx as lc
+
+    cfg = _settings(config).leanctx
+    pi_args = list(ctx.args)
+    if cfg.enabled and lc.pi_extension_entry() is None:
+        err_console.print(
+            "[yellow]secagent pi run:[/yellow] LeanCTX is enabled but the pi-lean-ctx extension "
+            "isn't installed — launching pi without it. Run `secagent init` to install it.")
+    lc.launch_pi(cfg, pi_args, pi_bin=pi_bin)
 
 
 @app.command()
