@@ -1,17 +1,10 @@
 """Deterministic Python call extraction for the knowledge graph.
 
-The affordance call map is produced only by the clang backend (C/C++) and the heavy
-ingest (C#/Rust); the light path used for Python leaves ``calls`` empty, so the KG has
-no call chains for its most common target language — and "what calls X" degrades to
-file co-location. Python's ``ast`` makes intra/inter-file call resolution cheap and
-exact, so this adds ``calls`` edges (function -> function) for Python with no LLM,
-restoring the flagship traversal.
-
-Resolution is by simple name against the repo's own function/method symbols — a call to
-a name the repo doesn't define (stdlib, third-party, a local variable) is dropped, so
-edges connect real repo symbols the projector already created. Name-only resolution can
-over-merge two same-named functions, the same modelling-discipline trade-off the
-projector already makes for Python's bare-name symbols.
+The affordance light path leaves Python ``calls`` empty, so this adds ``calls`` edges
+(function -> function) from the ast, with no LLM. Callees are resolved to their DEFINING
+file so the edge lands on the right node: two different functions named ``_walk`` in two
+files are two entities, and a call resolves to the one actually defined (same-file first,
+else the unique definition, else a deterministic pick for a genuinely ambiguous name).
 """
 
 from __future__ import annotations
@@ -35,42 +28,43 @@ def _call_name(func: ast.expr) -> str | None:
     return None
 
 
-def _walk(
-    node: ast.AST, caller: str | None, kg: KnowledgeGraph, targets: set[str], source: str
-) -> int:
-    """Recurse, tracking the enclosing function (the caller); emit an edge for each call
-    to a repo-defined name. Module-level calls (caller is None) are skipped — "who calls
-    X" is a function-to-function question."""
-    added = 0
+def _walk(node: ast.AST, caller: str | None, calls: list[tuple[str, str]]) -> None:
+    """Collect ``(caller, callee)`` pairs, tracking the enclosing function as the caller.
+    Module-level calls (caller is None) are skipped — "who calls X" is function-to-function."""
     for child in ast.iter_child_nodes(node):
         if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
-            # Descend into the function with it as the new caller.
-            added += _walk(child, child.name, kg, targets, source)
+            _walk(child, child.name, calls)
             continue
         if caller is not None and isinstance(child, ast.Call):
             callee = _call_name(child.func)
-            if callee and callee in targets:
-                # No entity `source` here: this file is the CALL SITE, not necessarily
-                # where caller/callee are defined (the callee is usually defined elsewhere).
-                # The projector owns entity source (the defining file); the call site is
-                # recorded on the relation instead.
-                cid = kg.add_entity(caller, "SYMBOL")
-                did = kg.add_entity(callee, "SYMBOL")
-                kg.add_relation(cid, did, "calls", source=source)
-                added += 1
-        added += _walk(child, caller, kg, targets, source)
-    return added
+            if callee:
+                calls.append((caller, callee))
+        _walk(child, caller, calls)
+
+
+def _resolve(callee: str, caller_file: str, def_files: dict[str, list[str]]) -> str | None:
+    """The defining file to attribute a call to ``callee`` from ``caller_file``.
+
+    Same-file definition wins (the common local-helper call); otherwise the unique
+    definition; otherwise a deterministic pick for a name defined in several other files
+    (genuinely ambiguous without type information). None if the repo defines no such name.
+    """
+    files = def_files.get(callee)
+    if not files:
+        return None
+    if caller_file in files:
+        return caller_file
+    return files[0] if len(files) == 1 else sorted(files)[0]
 
 
 def extract_python_calls(kg: KnowledgeGraph, store: AffordanceStore) -> int:
-    """Add ``calls`` edges for every Python file in ``store``. Returns the edge count.
-
-    Idempotent (edges dedup by (source, target, predicate)); the caller commits via this
-    function. Non-Python files and unparseable ones are skipped, never fatal.
-    """
-    targets = {name for name, _ in store.function_symbol_names()}
-    if not targets:
+    """Add resolved ``calls`` edges for every Python file in ``store``. Returns the count."""
+    def_files: dict[str, list[str]] = {}
+    for name, path in store.function_symbol_names():
+        def_files.setdefault(name, []).append(path)
+    if not def_files:
         return 0
+
     repo_root = Path(store.repo_root)
     added = 0
     for rec in store.file_records():
@@ -80,6 +74,18 @@ def extract_python_calls(kg: KnowledgeGraph, store: AffordanceStore) -> int:
             tree = ast.parse((repo_root / rec.path).read_text(encoding="utf-8"), filename=rec.path)
         except (OSError, SyntaxError, ValueError):
             continue  # unreadable/unparseable file: skip, don't abort the build
-        added += _walk(tree, None, kg, targets, rec.path)
+        calls: list[tuple[str, str]] = []
+        _walk(tree, None, calls)
+        for caller, callee in calls:
+            if callee not in def_files:
+                continue  # a call to something the repo doesn't define (stdlib, third-party)
+            callee_file = _resolve(callee, rec.path, def_files)
+            if callee_file is None:
+                continue
+            cid = kg.add_entity(caller, "SYMBOL", qualifier=rec.path)
+            did = kg.add_entity(callee, "SYMBOL", qualifier=callee_file)
+            if cid != did:  # drop self-loops (recursion / a namesake resolved to itself)
+                kg.add_relation(cid, did, "calls", source=rec.path)
+                added += 1
     kg.commit()
     return added

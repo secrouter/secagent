@@ -70,31 +70,42 @@ def project_affordances(kg: KnowledgeGraph, store: AffordanceStore) -> dict[str,
             kg.add_alias(fid, base)  # seed on "store.py" -> "src/secagent/kg/store.py"
         for sym in store.symbols_for_file(rec.path):
             canonical = sym.qualified_name or sym.name
+            # Qualify the symbol by its defining file, so same-named symbols in different
+            # files are distinct nodes (not one conflated node with cross-file edges).
             sid = kg.add_entity(
-                canonical, "SYMBOL", description=_symbol_description(sym), source=sym.file
+                canonical, "SYMBOL", qualifier=sym.file,
+                description=_symbol_description(sym), source=sym.file,
             )
             # Keep the bare name reachable when the canonical form is qualified.
             if sym.qualified_name and sym.name and sym.name != sym.qualified_name:
                 kg.add_alias(sid, sym.name)
             kg.add_relation(sid, fid, "defined_in", source=sym.file)
 
-    # Call edges: caller -[calls]-> callee (both code symbols).
+    # Call edges from the affordance call map: it already resolved each endpoint to its
+    # defining file (src_file for the caller, dst_file for the callee), so qualify by those.
     for edge in store.load_call_edges():
         if not (edge.caller and edge.callee):
             continue
-        cid = kg.add_entity(edge.caller, "SYMBOL", source=edge.src_file)
-        did = kg.add_entity(edge.callee, "SYMBOL", source=edge.dst_file)
-        kg.add_relation(cid, did, "calls", source=edge.src_file)
+        cid = kg.add_entity(edge.caller, "SYMBOL", qualifier=edge.src_file, source=edge.src_file)
+        did = kg.add_entity(edge.callee, "SYMBOL", qualifier=edge.dst_file, source=edge.dst_file)
+        if cid != did:  # drop a symbol resolving to itself (recursion / namesake)
+            kg.add_relation(cid, did, "calls", source=edge.src_file)
 
-    # Types: inheritance / interface implementation.
-    for typ in store.load_types():
+    # Types: inheritance / interface implementation. Qualify by file, and resolve a base to
+    # its own defining file when the repo declares it (else leave it unqualified — an
+    # external base).
+    types = store.load_types()
+    type_files = {t.qualified_name: t.file for t in types}
+    for typ in types:
         tid = kg.add_entity(
-            typ.qualified_name, "SYMBOL", description=typ.kind, source=typ.file
+            typ.qualified_name, "SYMBOL", qualifier=typ.file, description=typ.kind, source=typ.file
         )
         for base in typ.bases:
-            kg.add_relation(tid, kg.add_entity(base, "SYMBOL"), "inherits", source=typ.file)
+            bid = kg.add_entity(base, "SYMBOL", qualifier=type_files.get(base, ""))
+            kg.add_relation(tid, bid, "inherits", source=typ.file)
         for iface in typ.interfaces:
-            kg.add_relation(tid, kg.add_entity(iface, "SYMBOL"), "implements", source=typ.file)
+            iid = kg.add_entity(iface, "SYMBOL", qualifier=type_files.get(iface, ""))
+            kg.add_relation(tid, iid, "implements", source=typ.file)
 
     # IO map: imports, endpoints, datastores, env, messaging, sockets, cli.
     for io in store.load_io_edges():

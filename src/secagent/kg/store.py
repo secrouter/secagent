@@ -107,7 +107,7 @@ class KnowledgeGraph:
 
     # -- writes --------------------------------------------------------------
     def add_entity(
-        self, name: str, type_: str, *, description: str = "", source: str = ""
+        self, name: str, type_: str, *, qualifier: str = "", description: str = "", source: str = ""
     ) -> str:
         """Upsert an entity; returns its computed id.
 
@@ -120,7 +120,7 @@ class KnowledgeGraph:
         populated field, so a later call-edge write (whose file is a *calling* site, not a
         definition) cannot overwrite the defining file the projector recorded.
         """
-        eid = entity_id(type_, name)
+        eid = entity_id(type_, name, qualifier)
         self.db.execute(
             """
             INSERT INTO kg_entities (id, name, type, description, source)

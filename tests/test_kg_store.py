@@ -20,6 +20,13 @@ def test_entity_id_separates_by_type():
     assert entity_id("PERSON", "Sarah") != entity_id("ROLE", "Sarah")
 
 
+def test_entity_id_qualifier_distinguishes_same_name():
+    a = entity_id("SYMBOL", "foo", "a.py")
+    b = entity_id("SYMBOL", "foo", "b.py")
+    assert a != b, "same name in different files must be distinct nodes"
+    assert entity_id("SYMBOL", "foo") != a  # unqualified is its own key too
+
+
 def test_normalise_preserves_code_identifier_shape():
     # Underscores/colons carry meaning in code identifiers; don't collapse them.
     assert normalise("Http::Client") == "http::client"

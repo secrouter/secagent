@@ -77,6 +77,36 @@ def test_python_call_edges_are_extracted(tmp_path):
         assert ("main", "calls", "helper") in triples
 
 
+def test_call_resolves_to_same_file_definition(tmp_path):
+    # Two files define `helper`; run@a.py must call a.py's helper, not b.py's namesake.
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    (repo / "a.py").write_text("def helper():\n    return 1\ndef run():\n    return helper()\n")
+    (repo / "b.py").write_text("def helper():\n    return 2\n")
+    kg_project.build(repo, _settings(tmp_path), store_dir=str(tmp_path / "store"))
+    with KnowledgeGraph(repo, store_dir=str(tmp_path / "store")) as kg:
+        n = len(kg.db.execute("SELECT id FROM kg_entities WHERE name='helper'").fetchall())
+        assert n == 2, "the two helpers must be distinct nodes"
+        row = kg.db.execute(
+            "SELECT t.source FROM kg_relations r "
+            "JOIN kg_entities s ON s.id=r.source_id JOIN kg_entities t ON t.id=r.target_id "
+            "WHERE s.name='run' AND t.name='helper' AND r.predicate='calls'"
+        ).fetchone()
+        assert row["source"] == "a.py", "call resolved to the same-file definition"
+
+
+def test_self_loop_is_dropped(tmp_path):
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    (repo / "a.py").write_text("def fac(n):\n    return fac(n - 1)\n")  # recursion
+    kg_project.build(repo, _settings(tmp_path), store_dir=str(tmp_path / "store"))
+    with KnowledgeGraph(repo, store_dir=str(tmp_path / "store")) as kg:
+        loops = kg.db.execute(
+            "SELECT COUNT(*) FROM kg_relations WHERE source_id=target_id"
+        ).fetchone()[0]
+        assert loops == 0, "a symbol resolving to itself is not a useful call edge"
+
+
 def test_full_signature_is_stored(tmp_path):
     # Keyword-only args, annotations, and the return type must survive into the KG so
     # "what breaks if I change this signature" has the real params to reason about.

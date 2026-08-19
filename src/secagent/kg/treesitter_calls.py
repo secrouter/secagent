@@ -18,6 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .pycalls import _resolve
 from .store import KnowledgeGraph
 
 if TYPE_CHECKING:
@@ -93,8 +94,17 @@ def _callee_name(fn) -> str:
     return ""
 
 
-def _walk(key: str, root, defs: set[str], calls: list[tuple[str, str, str]], rel: str) -> None:
-    """Iterative DFS carrying the enclosing callable's name so calls are attributed to it."""
+def _record_def(def_files: dict[str, list[str]], name: str, rel: str) -> None:
+    files = def_files.setdefault(name, [])
+    if rel not in files:
+        files.append(rel)
+
+
+def _walk(
+    key: str, root, def_files: dict[str, list[str]], calls: list[tuple[str, str, str]], rel: str
+) -> None:
+    """Iterative DFS carrying the enclosing callable's name so calls are attributed to it;
+    records each definition against the file it is in for later callee resolution."""
     def_types = _DEF_TYPES[key]
     stack = [(root, "")]
     while stack:
@@ -103,14 +113,14 @@ def _walk(key: str, root, defs: set[str], calls: list[tuple[str, str, str]], rel
         if node.type in def_types:
             name = _text(node.child_by_field_name("name"))
             if name:
-                defs.add(name)
+                _record_def(def_files, name, rel)
                 enc = name
         elif node.type == "variable_declarator":  # const f = () => {…}
             value = node.child_by_field_name("value")
             if value is not None and value.type in _TS_FUNC_VALUES:
                 name = _text(node.child_by_field_name("name"))
                 if name:
-                    defs.add(name)
+                    _record_def(def_files, name, rel)
                     enc = name
         elif node.type == "call_expression":
             callee = _callee_name(node.child_by_field_name("function"))
@@ -131,7 +141,7 @@ def extract_treesitter_calls(kg: KnowledgeGraph, store: AffordanceStore) -> int:
     if not by_lang:
         return 0
 
-    defs: set[str] = set()
+    def_files: dict[str, list[str]] = {}
     pending: list[tuple[str, str, str]] = []
     for key, files in by_lang.items():
         if not _available(key):
@@ -142,17 +152,21 @@ def extract_treesitter_calls(kg: KnowledgeGraph, store: AffordanceStore) -> int:
                 src = (repo_root / rel).read_bytes()
             except OSError:
                 continue
-            _walk(key, parser.parse(src).root_node, defs, pending, rel)
+            _walk(key, parser.parse(src).root_node, def_files, pending, rel)
 
     # Emit only after every file's defs are known, so a call to a function defined in
-    # another file still resolves. Drop calls to names the repo doesn't define.
+    # another file still resolves. Resolve each callee to its DEFINING file (same-file
+    # first) so same-named symbols across files stay distinct; drop self-loops.
     added = 0
     for caller, callee, rel in pending:
-        if caller and callee in defs:
-            # `rel` is the call site, not necessarily the definition of caller/callee —
-            # record it on the relation only; the projector owns entity `source`.
-            cid = kg.add_entity(caller, "SYMBOL")
-            did = kg.add_entity(callee, "SYMBOL")
+        if not caller or callee not in def_files:
+            continue
+        callee_file = _resolve(callee, rel, def_files)
+        if callee_file is None:
+            continue
+        cid = kg.add_entity(caller, "SYMBOL", qualifier=rel)
+        did = kg.add_entity(callee, "SYMBOL", qualifier=callee_file)
+        if cid != did:
             kg.add_relation(cid, did, "calls", source=rel)
             added += 1
     kg.commit()
