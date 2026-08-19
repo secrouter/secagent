@@ -750,6 +750,13 @@ class KnowledgeGraphConfig(BaseModel):
     # ``pi --extension``). The container/SecChat sets this to its baked-in copy, mirroring
     # ``SECAGENT_PI_LEANCTX_EXTENSION`` for the LeanCTX extension.
     extension: str = ""
+    # Use the semantic ("heavy") call extractor per language when building the graph
+    # (``secagent kg build --deep``), not just the fast syntactic one — e.g. jedi for
+    # Python resolves ``obj.method()`` to its real definition. Off by default: heavy
+    # extraction is slower and its per-language module may not be installed (see
+    # ``secagent.kg.extractors``); a build with ``deep=True`` falls back to the light
+    # extractor for any language whose heavy module is unavailable.
+    deep: bool = False
 
 
 class Settings(BaseSettings):

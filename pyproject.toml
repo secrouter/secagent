@@ -80,6 +80,13 @@ rust = [
     "tree-sitter>=0.22",
     "tree-sitter-rust>=0.23",
 ]
+# Type-resolved Python call edges for the knowledge graph (``secagent kg build --deep``):
+# jedi infers a receiver's type so ``obj.method()`` resolves to its real definition, which
+# the fast name-based extractor can't do. Absent => that language falls back to the light
+# (syntactic) extractor; symbols/imports/other languages are unaffected.
+python-semantic = [
+    "jedi>=0.19",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=4.1",

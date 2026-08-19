@@ -144,11 +144,16 @@ def recall(
         if f.predicate != "defined_in" or f.subject in relevant or f.obj in seed_names
     ]
 
-    # Ranking within a depth: real relationships (calls/inherits/imports) above
+    # Ranking within a depth: real relationships (calls/may_call/inherits/imports) above
     # `defined_in` (a file hub every co-located symbol hangs off); then cross-file
     # relationships above same-file ones, since a boundary-crossing caller is the
     # higher-signal, wider-blast-radius answer for "what calls X"/impact questions and
     # must survive the top-k cap. Then a stable order so identical graphs recall identically.
+    # `may_call` (a semantic backend's honest polymorphic edge — virtual/interface
+    # dispatch through possibly several overriders) is only ever excluded by the SAME
+    # check as `calls` (predicate == "defined_in"), so it ranks and disambiguates
+    # identically; `as_text` prints the predicate verbatim, so the caller still sees
+    # which kind of edge it is.
     facts.sort(key=lambda f: (
         f.depth, f.predicate == "defined_in", not f.is_cross_file(),
         f.subject, f.predicate, f.obj,

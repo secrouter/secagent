@@ -1318,6 +1318,10 @@ def mcp_gitlab(
 @kg_app.command("build")
 def kg_build(
     repo: Path = typer.Argument(..., help="Repo to build the knowledge graph for."),
+    deep: bool = typer.Option(
+        False, "--deep",
+        help="Use the semantic (type-resolved) call extractor per language where "
+             "available, instead of the fast syntactic one (e.g. jedi for Python)."),
     config: str | None = typer.Option(None, "--config", "-c"),
 ) -> None:
     """(Re)build the knowledge graph for a repo by projecting its affordances.
@@ -1327,7 +1331,7 @@ def kg_build(
     """
     from .kg import project
 
-    counts = project.build(repo, _settings(config))
+    counts = project.build(repo, _settings(config), deep=deep)
     err_console.print(
         f"knowledge graph: {counts['entities']} entities, {counts['relations']} relations, "
         f"{counts['aliases']} aliases"

@@ -23,6 +23,15 @@ if TYPE_CHECKING:  # avoid importing the heavy affordances package at module loa
     from ..affordances.models import Symbol
     from ..affordances.store import AffordanceStore
 
+# CallEdge.edge_kind -> a graph predicate. A "direct" call is unconditional; "virtual"/
+# "interface" dispatch (semantic backends distinguish these; syntactic ones never emit
+# them) becomes "may_call" — an honest polymorphic edge: the call happens through one of
+# possibly several overriders/implementers, not necessarily this exact one. An
+# unrecognized edge_kind also falls back to "may_call", not "calls": an unknown dispatch
+# shape is more safely treated as potentially polymorphic than claimed unconditional
+# (keep in lockstep with gocalls_semantic.py's _PREDICATE fallback).
+_CALL_PREDICATE = {"direct": "calls", "virtual": "may_call", "interface": "may_call"}
+
 # IOEdge.kind -> a graph predicate. Names read as "src <predicate> dst".
 _IO_PREDICATE = {
     "import": "imports",
@@ -89,7 +98,8 @@ def project_affordances(kg: KnowledgeGraph, store: AffordanceStore) -> dict[str,
         cid = kg.add_entity(edge.caller, "SYMBOL", qualifier=edge.src_file, source=edge.src_file)
         did = kg.add_entity(edge.callee, "SYMBOL", qualifier=edge.dst_file, source=edge.dst_file)
         if cid != did:  # drop a symbol resolving to itself (recursion / namesake)
-            kg.add_relation(cid, did, "calls", source=edge.src_file)
+            predicate = _CALL_PREDICATE.get(edge.edge_kind, "may_call")
+            kg.add_relation(cid, did, predicate, source=edge.src_file)
 
     # Types: inheritance / interface implementation. Qualify by file, and resolve a base to
     # its own defining file when the repo declares it (else leave it unqualified — an
@@ -128,15 +138,16 @@ def _io_endpoint(name: str, file_paths: set[str]) -> tuple[str, str]:
     return (name, "FILE") if name in file_paths else (name, "EXTERNAL")
 
 
-def build(repo, settings, *, store_dir: str | None = None) -> dict[str, int]:
+def build(repo, settings, *, store_dir: str | None = None, deep: bool = False) -> dict[str, int]:
     """Index the repo if needed, then (re)build its knowledge graph. Returns KG counts.
 
     ``store_dir`` defaults to the affordance store's, so the KG lives in the same
-    ``index.db`` as the affordances it is projected from.
+    ``index.db`` as the affordances it is projected from. ``deep`` selects the semantic
+    ("heavy") call extractor over the fast syntactic one, per language, where a heavy
+    module is installed and available (see ``secagent.kg.extractors.run_extractors``).
     """
     from ..affordances import queries
-    from .pycalls import extract_python_calls
-    from .treesitter_calls import extract_treesitter_calls
+    from .extractors import run_extractors
 
     sd = store_dir or settings.affordances.store_dir
     store = queries.ensure_indexed(repo, settings)
@@ -144,10 +155,10 @@ def build(repo, settings, *, store_dir: str | None = None) -> dict[str, int]:
         with KnowledgeGraph(repo, store_dir=sd) as kg:
             kg.clear()
             project_affordances(kg, store)
-            # The affordance light path extracts no call edges for Python/Go/TS; add them
-            # directly (ast for Python, tree-sitter for Go/TS/JS) so call-chain recall works.
-            extract_python_calls(kg, store)
-            extract_treesitter_calls(kg, store)
+            # The affordance light path extracts no call edges for Python/Go/TS/JS; add
+            # them so call-chain recall works, light (name-based) or heavy (type-resolved)
+            # per language and per ``deep``.
+            run_extractors(kg, store, deep=deep)
             return kg.counts()
     finally:
         store.close()

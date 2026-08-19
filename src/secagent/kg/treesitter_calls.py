@@ -154,11 +154,25 @@ def _walk(
             stack.append((child, enc))
 
 
-def extract_treesitter_calls(kg: KnowledgeGraph, store: AffordanceStore) -> int:
-    """Add Go/TS/JS ``calls`` edges to ``kg``; returns the edge count (0 if no grammars)."""
+def extract_treesitter_calls(
+    kg: KnowledgeGraph, store: AffordanceStore, *, langs: frozenset[str] | None = None
+) -> int:
+    """Add Go/TS/JS ``calls`` edges to ``kg``; returns the edge count (0 if no grammars).
+
+    ``langs``, when given, restricts the pass to files whose ``FileRecord.language``
+    (lowercased — "go" / "typescript" / "javascript") is a member of it. The caller
+    (``extractors.run_extractors``) uses this so that when a heavy semantic extractor
+    already covered one of Go/TS/JS, this light pass doesn't also walk that language's
+    files "for free" via the shared extension map and add lower-quality (or outright
+    wrong, e.g. an unconditional edge for interface dispatch) duplicate edges alongside
+    the semantic ones. ``None`` (the default) keeps the old whole-repo behavior, e.g.
+    for direct/standalone callers of this function.
+    """
     repo_root = Path(store.repo_root)
     by_lang: dict[str, list[str]] = {}
     for rec in store.file_records():
+        if langs is not None and rec.language.lower() not in langs:
+            continue
         key = _EXT_LANG.get(Path(rec.path).suffix.lower())
         if key:
             by_lang.setdefault(key, []).append(rec.path)

@@ -40,6 +40,7 @@ integrations
 leanctx
 architecture
 affordances
+knowledge-graph
 ```
 
 ```{toctree}
