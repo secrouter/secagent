@@ -123,6 +123,18 @@ def _walk(
                 if name:
                     _record_def(def_files, name, rel)
                     enc = name
+        elif node.type == "assignment_expression":  # CommonJS: exports.x = function(){…}
+            right = node.child_by_field_name("right")
+            if right is not None and right.type in _TS_FUNC_VALUES:
+                left = node.child_by_field_name("left")
+                name = ""
+                if left is not None and left.type == "member_expression":
+                    name = _text(left.child_by_field_name("property"))
+                elif left is not None and left.type == "identifier":
+                    name = _text(left)
+                if name:
+                    _record_def(def_files, name, rel)
+                    enc = name
         elif node.type == "call_expression":
             fn = node.child_by_field_name("function")
             callee = _callee_name(fn)
