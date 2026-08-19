@@ -33,7 +33,22 @@ _GENERIC_METHODS = frozenset([
     "valueof", "commit", "flush", "rollback", "key", "value", "length", "size", "count",
     "len", "cap", "join", "split", "trim", "slice", "splice", "concat", "includes",
     "indexof", "lock", "unlock", "scan", "fetchall", "fetchone", "exec", "query",
-    "prepare", "bind",
+    "prepare", "bind", "test", "now", "create",
+])
+
+# Language builtins that are commonly CALLED BARE (``next(x)``, ``len(x)``, ``make(...)``)
+# and collide with plausible project names. A bare call to one of these is treated as the
+# builtin, not an internal namesake — this only ever fires when the repo also defines the
+# name, so being inclusive is safe.
+_BUILTINS = frozenset([
+    # Python
+    "next", "len", "str", "int", "float", "bool", "list", "dict", "set", "tuple", "print",
+    "range", "enumerate", "zip", "map", "filter", "sorted", "reversed", "open", "iter",
+    "isinstance", "issubclass", "getattr", "setattr", "hasattr", "delattr", "type", "id",
+    "repr", "hash", "min", "max", "sum", "abs", "round", "any", "all", "format", "super",
+    "bytes", "vars", "dir", "input",
+    # Go
+    "make", "new", "append", "copy", "delete", "panic", "recover", "println", "cap",
 ])
 
 
@@ -73,22 +88,33 @@ def _resolve(
 ) -> str | None:
     """The defining file to attribute a call to ``callee`` from ``caller_file``.
 
-    A member call to a generic stdlib-ish method name (``obj.get()``, ``f.Close()``)
-    resolves to None UNLESS the receiver is ``self``/``this`` — the receiver is otherwise
-    almost certainly an external type (a dict, a file, a Map), so binding it to an internal
-    namesake would be a false edge. ``self.close()`` is definitely the class's own method,
-    so it resolves. Then: the same-file definition (the common local-helper call), else the
-    unique definition, else a deterministic pick for a genuinely ambiguous cross-file name.
+    Resolution, in order (a ``self``/``this`` receiver skips the drops — the call is
+    definitely the class's own method):
+      - a member call to a generic stdlib method name (``obj.get()``, ``f.Close()``) -> None,
+        even if a same-file namesake exists (``f.Close()`` is not the local ``close()``);
+      - a same-file definition (the common local-helper / ``self.method()`` / local-shadow call);
+      - a bare call to a language builtin with no local shadow (``next(x)``) -> None;
+      - the unique definition, if the name is defined in exactly one file;
+      - a member call to a name defined in SEVERAL files -> None (``res.render()`` vs
+        ``app.render()`` can't be told apart without the receiver's type — don't guess);
+      - otherwise (a bare call to a multi-file name) a deterministic pick.
     None if the repo defines no such name at all.
     """
     files = def_files.get(callee)
     if not files:
         return None
-    if is_member and not is_self and callee.lower() in _GENERIC_METHODS:
+    low = callee.lower()
+    if is_member and not is_self and low in _GENERIC_METHODS:
         return None
     if caller_file in files:
-        return caller_file
-    return files[0] if len(files) == 1 else sorted(files)[0]
+        return caller_file  # same-file definition (or self) — the local function
+    if not is_member and low in _BUILTINS:
+        return None  # a bare builtin call with no local shadow — the builtin
+    if len(files) == 1:
+        return files[0]
+    if is_member and not is_self:
+        return None  # multi-file member call, no receiver type — can't pick which
+    return sorted(files)[0]
 
 
 def extract_python_calls(kg: KnowledgeGraph, store: AffordanceStore) -> int:

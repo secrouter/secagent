@@ -128,6 +128,40 @@ def test_self_method_call_is_kept(tmp_path):
         assert n == 1, "self.close() must be kept"
 
 
+def test_bare_builtin_call_is_dropped(tmp_path):
+    # next() here is the Python builtin on a generator — not the repo's own `next`
+    # defined elsewhere; it must not link.
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    (repo / "a.py").write_text("class R:\n    def next(self):\n        return 1\n")
+    (repo / "b.py").write_text("def run(gen):\n    return next(gen)\n")
+    kg_project.build(repo, _settings(tmp_path), store_dir=str(tmp_path / "store"))
+    with KnowledgeGraph(repo, store_dir=str(tmp_path / "store")) as kg:
+        n = kg.db.execute(
+            "SELECT COUNT(*) FROM kg_relations r JOIN kg_entities s ON s.id=r.source_id "
+            "JOIN kg_entities t ON t.id=r.target_id WHERE s.name='run' AND t.name='next'"
+        ).fetchone()[0]
+        assert n == 0, "builtin next() must not link to the repo's own next method"
+
+
+def test_ambiguous_member_call_is_dropped(tmp_path):
+    # `render` is defined in two files; a third file's obj.render() can't be resolved to
+    # either without the receiver's type, so it must be dropped, not guessed.
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    (repo / "app.py").write_text("class App:\n    def render(self, x):\n        return x\n")
+    (repo / "view.py").write_text("class View:\n    def render(self, x):\n        return x\n")
+    (repo / "use.py").write_text("def draw(thing):\n    return thing.render('x')\n")
+    kg_project.build(repo, _settings(tmp_path), store_dir=str(tmp_path / "store"))
+    with KnowledgeGraph(repo, store_dir=str(tmp_path / "store")) as kg:
+        assert len(kg.db.execute("SELECT id FROM kg_entities WHERE name='render'").fetchall()) == 2
+        n = kg.db.execute(
+            "SELECT COUNT(*) FROM kg_relations r JOIN kg_entities s ON s.id=r.source_id "
+            "JOIN kg_entities t ON t.id=r.target_id WHERE s.name='draw' AND t.name='render'"
+        ).fetchone()[0]
+        assert n == 0, "thing.render() with two render definitions must not be guessed"
+
+
 def test_self_loop_is_dropped(tmp_path):
     repo = tmp_path / "proj"
     repo.mkdir()

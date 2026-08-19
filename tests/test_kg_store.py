@@ -10,10 +10,11 @@ import stat
 from secagent.kg import KnowledgeGraph, entity_id, normalise
 
 
-def test_entity_id_is_deterministic_and_merges_by_normalised_name():
-    a = entity_id("ROLE", "Ops Manager")
-    b = entity_id("ROLE", "ops  manager")  # different case + spacing
-    assert a == b, "identity must be case/whitespace-insensitive so re-extraction merges"
+def test_entity_id_merges_whitespace_but_is_case_sensitive():
+    # Whitespace collapses (so re-extraction merges), but case is significant — Go's
+    # exported `Handle` and unexported `handle` in one file must stay two nodes.
+    assert entity_id("SYMBOL", "Handle") == entity_id("SYMBOL", "Handle ")
+    assert entity_id("SYMBOL", "Handle") != entity_id("SYMBOL", "handle")
 
 
 def test_entity_id_separates_by_type():
@@ -36,8 +37,8 @@ def test_normalise_preserves_code_identifier_shape():
 def test_add_and_count_and_rerun_merges(tmp_path):
     with KnowledgeGraph(tmp_path) as kg:
         first = kg.add_entity("Ops Manager", "ROLE", description="signs refunds")
-        # Re-extract the same entity (different spelling, richer description).
-        second = kg.add_entity("ops manager", "ROLE", description="")
+        # Re-extract the same entity (whitespace differs, blank description).
+        second = kg.add_entity("Ops  Manager", "ROLE", description="")
         kg.commit()
         assert first == second
         counts = kg.counts()
