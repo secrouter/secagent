@@ -62,6 +62,18 @@ csharp = [
     "tree-sitter>=0.22",
     "tree-sitter-c-sharp>=0.23",
 ]
+# Go call edges for the knowledge graph via the tree-sitter grammar (no Go toolchain
+# needed). Absent => the KG has no Go `calls` edges (symbols/imports still work).
+go = [
+    "tree-sitter>=0.22",
+    "tree-sitter-go>=0.23",
+]
+# TypeScript/JavaScript call edges for the knowledge graph via the tree-sitter grammar.
+# Absent => the KG has no TS/JS `calls` edges (symbols/imports still work).
+typescript = [
+    "tree-sitter>=0.22",
+    "tree-sitter-typescript>=0.23",
+]
 # Accurate Rust functions + call map via the tree-sitter grammar (no Rust toolchain and
 # no built project needed). Absent => secagent falls back to regex symbols / the LLM.
 rust = [
