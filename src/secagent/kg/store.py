@@ -283,7 +283,8 @@ class KnowledgeGraph:
         rows = self.db.execute(
             f"""
             SELECT e1.name AS subject, r.predicate AS predicate, e2.name AS obj,
-                   r.source AS source, r.source_id AS sid, r.target_id AS tid
+                   r.source AS source, r.source_id AS sid, r.target_id AS tid,
+                   e1.source AS subject_src, e2.source AS obj_src
             FROM kg_relations r
             JOIN kg_entities e1 ON e1.id = r.source_id
             JOIN kg_entities e2 ON e2.id = r.target_id
@@ -294,5 +295,8 @@ class KnowledgeGraph:
         facts: list[Fact] = []
         for r in rows:
             depth = min(reached.get(r["sid"], 0), reached.get(r["tid"], 0))
-            facts.append(Fact(r["subject"], r["predicate"], r["obj"], r["source"], depth))
+            facts.append(Fact(
+                r["subject"], r["predicate"], r["obj"], r["source"], depth,
+                r["subject_src"], r["obj_src"],
+            ))
         return facts

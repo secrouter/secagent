@@ -149,6 +149,34 @@ def test_recall_notes_include_defining_file(tmp_path):
         assert "[a.py]" in text  # the defining file is surfaced so collisions can be told apart
 
 
+def test_recall_annotates_ambiguous_endpoint_with_file(tmp_path):
+    with KnowledgeGraph(tmp_path) as kg:
+        kg.add_entity("a.py", "FILE")
+        kg.add_entity("b.py", "FILE")
+        foo_a = kg.add_entity("foo", "SYMBOL", qualifier="a.py", source="a.py", description="fn")
+        foo_b = kg.add_entity("foo", "SYMBOL", qualifier="b.py", source="b.py", description="fn")
+        invoke = kg.add_entity("invoke", "SYMBOL", qualifier="c.py", source="c.py")
+        kg.add_relation(invoke, foo_a, "calls")
+        kg.add_relation(invoke, foo_b, "calls")
+        kg.commit()
+        text = recall(kg, "invoke").as_text()
+        # "foo" is ambiguous (two files) -> annotated inline so the reader can't merge them.
+        assert "foo [a.py]" in text
+        assert "foo [b.py]" in text
+
+
+def test_recall_ranks_cross_file_calls_first(tmp_path):
+    with KnowledgeGraph(tmp_path) as kg:
+        target = kg.add_entity("target", "SYMBOL", qualifier="t.py", source="t.py")
+        local = kg.add_entity("localCaller", "SYMBOL", qualifier="t.py", source="t.py")
+        remote = kg.add_entity("remoteCaller", "SYMBOL", qualifier="o.py", source="o.py")
+        kg.add_relation(local, target, "calls")  # same-file caller
+        kg.add_relation(remote, target, "calls")  # cross-file caller (wider blast radius)
+        kg.commit()
+        facts = recall(kg, "target").facts
+        assert facts[0].subject == "remoteCaller", "cross-file caller ranks first"
+
+
 def test_recall_ranks_relationships_above_defined_in(tmp_path):
     # A symbol has both a `defined_in` (its file, a hub) and a `calls` edge, both at
     # depth 0 (they touch the seed). The real relationship must rank first.

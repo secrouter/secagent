@@ -42,8 +42,10 @@ class Relation:
 class Fact:
     """A flattened triple as traversal returns it: ``subject -[predicate]-> object``.
 
-    Carries the endpoint names (not just ids) and the shallower traversal depth of its
-    two endpoints, so recall can rank by nearness to the seeds and cap to a budget.
+    Carries the endpoint names (not just ids), each endpoint's defining file, and the
+    shallower traversal depth of its two endpoints — so recall can rank by nearness and by
+    whether the relationship crosses a file boundary, cap to a budget, and disambiguate
+    same-named endpoints by file.
     """
 
     subject: str
@@ -51,6 +53,13 @@ class Fact:
     obj: str
     source: str = ""
     depth: int = 0  # min traversal depth of the nearer endpoint (0 = a seed itself)
+    subject_src: str = ""  # defining file of the subject entity
+    obj_src: str = ""  # defining file of the object entity
+
+    def is_cross_file(self) -> bool:
+        """Whether the two endpoints are defined in different files — a boundary-crossing
+        relationship, which for "what calls X"/impact questions is the higher-signal kind."""
+        return bool(self.subject_src) and bool(self.obj_src) and self.subject_src != self.obj_src
 
     def as_line(self) -> str:
         arrow = f"{self.subject} --[{self.predicate}]--> {self.obj}"

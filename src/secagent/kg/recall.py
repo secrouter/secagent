@@ -80,15 +80,33 @@ class Recall:
 
     def as_text(self) -> str:
         """Format for injection. The FIRST line is the counts summary (the hook surfaces
-        it as a one-line status); the rest is the facts and their conditions."""
+        it as a one-line status); the rest is the facts and their conditions.
+
+        An endpoint name that appears with more than one defining file among the facts is
+        annotated inline with its file (``Close [leg.go]``), so the reader never merges two
+        same-named-but-different definitions.
+        """
         if self.is_empty():
             return "memory: no matches"
+
+        name_files: dict[str, set[str]] = {}
+        for f in self.facts:
+            name_files.setdefault(f.subject, set()).add(f.subject_src)
+            name_files.setdefault(f.obj, set()).add(f.obj_src)
+        ambiguous = {n for n, files in name_files.items() if len({x for x in files if x}) > 1}
+
+        def show(name: str, src: str) -> str:
+            return f"{name} [{src}]" if name in ambiguous and src else name
+
         lines = [f"memory: {len(self.facts)} facts recalled"]
-        lines += [f.as_line() for f in self.facts]
+        for f in self.facts:
+            subj, obj = show(f.subject, f.subject_src), show(f.obj, f.obj_src)
+            arrow = f"{subj} --[{f.predicate}]--> {obj}"
+            lines.append(f"{arrow}  ({f.source})" if f.source else arrow)
         if self.notes:
             lines.append("where:")
-            # Include the defining file so same-named symbols from different files (a
-            # frequent source of collision noise) can be told apart by the reader.
+            # Include the defining file so same-named symbols from different files can be
+            # told apart by the reader.
             for n in self.notes:
                 loc = f" [{n.source}]" if n.source else ""
                 lines.append(f"  {n.name}{loc}: {n.description}")
@@ -126,11 +144,15 @@ def recall(
         if f.predicate != "defined_in" or f.subject in relevant or f.obj in seed_names
     ]
 
-    # Nearest-first; within a depth, real relationships (calls/inherits/imports) rank
-    # above `defined_in` so a symbol's file — a hub every co-located symbol hangs off —
-    # doesn't bury the edges that actually answer the question. Then a stable order so
-    # identical graphs recall identically.
-    facts.sort(key=lambda f: (f.depth, f.predicate == "defined_in", f.subject, f.predicate, f.obj))
+    # Ranking within a depth: real relationships (calls/inherits/imports) above
+    # `defined_in` (a file hub every co-located symbol hangs off); then cross-file
+    # relationships above same-file ones, since a boundary-crossing caller is the
+    # higher-signal, wider-blast-radius answer for "what calls X"/impact questions and
+    # must survive the top-k cap. Then a stable order so identical graphs recall identically.
+    facts.sort(key=lambda f: (
+        f.depth, f.predicate == "defined_in", not f.is_cross_file(),
+        f.subject, f.predicate, f.obj,
+    ))
     facts = facts[:top_k]
 
     # Entity notes: descriptions for the entities that appear in the kept facts (the

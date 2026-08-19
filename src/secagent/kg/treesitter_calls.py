@@ -101,7 +101,8 @@ def _record_def(def_files: dict[str, list[str]], name: str, rel: str) -> None:
 
 
 def _walk(
-    key: str, root, def_files: dict[str, list[str]], calls: list[tuple[str, str, str]], rel: str
+    key: str, root, def_files: dict[str, list[str]],
+    calls: list[tuple[str, str, str, bool, bool]], rel: str,
 ) -> None:
     """Iterative DFS carrying the enclosing callable's name so calls are attributed to it;
     records each definition against the file it is in for later callee resolution."""
@@ -123,9 +124,20 @@ def _walk(
                     _record_def(def_files, name, rel)
                     enc = name
         elif node.type == "call_expression":
-            callee = _callee_name(node.child_by_field_name("function"))
+            fn = node.child_by_field_name("function")
+            callee = _callee_name(fn)
             if callee:
-                calls.append((enclosing, callee, rel))
+                # selector_expression (Go recv.Method) / member_expression (TS obj.method)
+                # are member calls; a bare identifier is a direct call. A TS `this.m()`
+                # receiver marks a definitely-internal method (Go has no such marker).
+                is_member = fn is not None and fn.type in (
+                    "selector_expression", "member_expression",
+                )
+                is_self = False
+                if fn is not None and fn.type == "member_expression":
+                    obj = fn.child_by_field_name("object")
+                    is_self = obj is not None and obj.type == "this"
+                calls.append((enclosing, callee, rel, is_member, is_self))
         for child in node.children:
             stack.append((child, enc))
 
@@ -142,7 +154,7 @@ def extract_treesitter_calls(kg: KnowledgeGraph, store: AffordanceStore) -> int:
         return 0
 
     def_files: dict[str, list[str]] = {}
-    pending: list[tuple[str, str, str]] = []
+    pending: list[tuple[str, str, str, bool, bool]] = []
     for key, files in by_lang.items():
         if not _available(key):
             continue
@@ -158,10 +170,10 @@ def extract_treesitter_calls(kg: KnowledgeGraph, store: AffordanceStore) -> int:
     # another file still resolves. Resolve each callee to its DEFINING file (same-file
     # first) so same-named symbols across files stay distinct; drop self-loops.
     added = 0
-    for caller, callee, rel in pending:
+    for caller, callee, rel, is_member, is_self in pending:
         if not caller or callee not in def_files:
             continue
-        callee_file = _resolve(callee, rel, def_files)
+        callee_file = _resolve(callee, rel, def_files, is_member, is_self)
         if callee_file is None:
             continue
         cid = kg.add_entity(caller, "SYMBOL", qualifier=rel)

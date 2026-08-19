@@ -95,6 +95,39 @@ def test_call_resolves_to_same_file_definition(tmp_path):
         assert row["source"] == "a.py", "call resolved to the same-file definition"
 
 
+def test_generic_member_call_to_external_is_dropped(tmp_path):
+    # b.py's `d.get()` is a dict method (external); it must NOT link to a.py's internal
+    # `get` method just because the names match.
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    (repo / "a.py").write_text("class C:\n    def get(self, k):\n        return k\n")
+    (repo / "b.py").write_text("def run(d):\n    return d.get('x')\n")
+    kg_project.build(repo, _settings(tmp_path), store_dir=str(tmp_path / "store"))
+    with KnowledgeGraph(repo, store_dir=str(tmp_path / "store")) as kg:
+        n = kg.db.execute(
+            "SELECT COUNT(*) FROM kg_relations r JOIN kg_entities s ON s.id=r.source_id "
+            "JOIN kg_entities t ON t.id=r.target_id WHERE s.name='run' AND t.name='get'"
+        ).fetchone()[0]
+        assert n == 0, "d.get() on an external dict must not link to the internal get method"
+
+
+def test_self_method_call_is_kept(tmp_path):
+    # self.close() is unambiguously the class's own method — the generic-name drop must
+    # not remove it.
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    (repo / "a.py").write_text(
+        "class C:\n    def close(self):\n        pass\n    def stop(self):\n        self.close()\n"
+    )
+    kg_project.build(repo, _settings(tmp_path), store_dir=str(tmp_path / "store"))
+    with KnowledgeGraph(repo, store_dir=str(tmp_path / "store")) as kg:
+        n = kg.db.execute(
+            "SELECT COUNT(*) FROM kg_relations r JOIN kg_entities s ON s.id=r.source_id "
+            "JOIN kg_entities t ON t.id=r.target_id WHERE s.name='stop' AND t.name='close'"
+        ).fetchone()[0]
+        assert n == 1, "self.close() must be kept"
+
+
 def test_self_loop_is_dropped(tmp_path):
     repo = tmp_path / "proj"
     repo.mkdir()
