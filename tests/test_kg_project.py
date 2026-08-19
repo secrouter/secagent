@@ -77,6 +77,19 @@ def test_python_call_edges_are_extracted(tmp_path):
         assert ("main", "calls", "helper") in triples
 
 
+def test_full_signature_is_stored(tmp_path):
+    # Keyword-only args, annotations, and the return type must survive into the KG so
+    # "what breaks if I change this signature" has the real params to reason about.
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    (repo / "m.py").write_text("def f(a, *, b: int = 1) -> int:\n    return a\n")
+    kg_project.build(repo, _settings(tmp_path), store_dir=str(tmp_path / "store"))
+    with KnowledgeGraph(repo, store_dir=str(tmp_path / "store")) as kg:
+        desc = kg.db.execute("SELECT description FROM kg_entities WHERE name='f'").fetchone()[0]
+        assert "b: int" in desc  # keyword-only arg preserved
+        assert "-> int" in desc  # return annotation preserved
+
+
 def test_basename_alias_seeds_a_file(tmp_path):
     settings = _settings(tmp_path)
     kg_project.build(FIXTURE, settings, store_dir=str(tmp_path / "store"))

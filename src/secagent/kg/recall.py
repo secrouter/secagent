@@ -16,12 +16,22 @@ from .models import Entity, Fact
 from .store import KnowledgeGraph
 
 # Common words that would seed noisily (they are never entity names worth starting from).
+# The second group is code-query vocabulary — the words a developer uses to *ask about*
+# code ("what CALLS X", "where is the CLASS Y"). When such a word coincidentally matches a
+# symbol of the same name (a `calls()` function, a `type()` method) it seeds an irrelevant
+# subgraph, so these are dropped as anchors (the specific target symbol carries the query).
 _STOPWORDS = frozenset([
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have",
     "how", "in", "into", "is", "it", "of", "on", "or", "that", "the", "to", "was",
     "what", "when", "where", "which", "who", "why", "with", "does", "do", "can",
     "will", "would", "should", "could", "i", "you", "show", "tell", "list", "find",
     "get", "me", "my", "our", "this", "these", "those", "it's", "whats", "what's",
+    # code-query vocabulary
+    "call", "calls", "called", "calling", "caller", "callers", "callee", "callees",
+    "function", "functions", "method", "methods", "class", "classes", "type", "types",
+    "import", "imports", "imported", "return", "returns", "define", "defined", "defines",
+    "definition", "uses", "used", "using", "reference", "references", "breaks", "break",
+    "change", "changing", "signature", "trace", "happens", "run", "runs",
 ])
 
 # Identifier-ish tokens: keep the punctuation that carries meaning in code names
@@ -77,7 +87,11 @@ class Recall:
         lines += [f.as_line() for f in self.facts]
         if self.notes:
             lines.append("where:")
-            lines += [f"  {n.name}: {n.description}" for n in self.notes]
+            # Include the defining file so same-named symbols from different files (a
+            # frequent source of collision noise) can be told apart by the reader.
+            for n in self.notes:
+                loc = f" [{n.source}]" if n.source else ""
+                lines.append(f"  {n.name}{loc}: {n.description}")
         return "\n".join(lines)
 
 

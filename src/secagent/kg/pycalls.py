@@ -50,8 +50,12 @@ def _walk(
         if caller is not None and isinstance(child, ast.Call):
             callee = _call_name(child.func)
             if callee and callee in targets:
-                cid = kg.add_entity(caller, "SYMBOL", source=source)
-                did = kg.add_entity(callee, "SYMBOL", source=source)
+                # No entity `source` here: this file is the CALL SITE, not necessarily
+                # where caller/callee are defined (the callee is usually defined elsewhere).
+                # The projector owns entity source (the defining file); the call site is
+                # recorded on the relation instead.
+                cid = kg.add_entity(caller, "SYMBOL")
+                did = kg.add_entity(callee, "SYMBOL")
                 kg.add_relation(cid, did, "calls", source=source)
                 added += 1
         added += _walk(child, caller, kg, targets, source)

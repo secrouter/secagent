@@ -119,6 +119,36 @@ def test_recall_keeps_file_members_when_the_file_is_the_seed(tmp_path):
         assert ("drainRTCP", "defined_in", "offer.go") in names
 
 
+def test_seed_terms_drops_code_query_words():
+    # "calls"/"return" are how you ASK about code; when they coincide with a symbol name
+    # they mis-seed. The specific target still anchors the query.
+    terms = set(_seed_terms("what calls add_entity and what does it return"))
+    assert "add_entity" in terms
+    assert "calls" not in terms
+    assert "return" not in terms
+
+
+def test_seed_suppresses_over_common_terms(tmp_path):
+    with KnowledgeGraph(tmp_path) as kg:
+        for i in range(4):
+            e = kg.add_entity(f"sym{i}", "SYMBOL")
+            kg.add_alias(e, "common")  # 4 entities share this alias
+        kg.commit()
+        assert kg.seed(["common"], max_matches_per_term=2) == []  # too generic -> dropped
+        assert len(kg.seed(["common"], max_matches_per_term=10)) == 4  # under the cap -> kept
+
+
+def test_recall_notes_include_defining_file(tmp_path):
+    with KnowledgeGraph(tmp_path) as kg:
+        kg.add_entity("a.py", "FILE")
+        s = kg.add_entity("foo", "SYMBOL", description="function", source="a.py")
+        t = kg.add_entity("bar", "SYMBOL")
+        kg.add_relation(s, t, "calls")
+        kg.commit()
+        text = recall(kg, "foo").as_text()
+        assert "[a.py]" in text  # the defining file is surfaced so collisions can be told apart
+
+
 def test_recall_ranks_relationships_above_defined_in(tmp_path):
     # A symbol has both a `defined_in` (its file, a hub) and a `calls` edge, both at
     # depth 0 (they touch the seed). The real relationship must rank first.

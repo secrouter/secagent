@@ -65,8 +65,10 @@ export default function (pi: ExtensionAPI): void {
     const block =
       "## Knowledge graph — verified facts about THIS repository\n" +
       "The following relationships were extracted by deterministic static analysis and are " +
-      "ground truth. Treat them as authoritative: do not claim a listed symbol is undefined, " +
-      "and prefer these over guessing. `A --[calls]--> B` means A calls B; " +
+      "ground truth. Treat them as authoritative and prefer them over guessing. Do NOT claim " +
+      "a listed symbol is undefined, and do NOT claim a listed relationship is absent — if a " +
+      "`calls` fact is listed for a symbol, that call exists (these facts may be incomplete, " +
+      "but every one shown is real). `A --[calls]--> B` means A calls B; " +
       "`X --[defined_in]--> file` means X is defined in that file.\n\n" +
       facts;
     return { systemPrompt: `${event.systemPrompt}\n\n${block}` };

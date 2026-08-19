@@ -149,8 +149,10 @@ def extract_treesitter_calls(kg: KnowledgeGraph, store: AffordanceStore) -> int:
     added = 0
     for caller, callee, rel in pending:
         if caller and callee in defs:
-            cid = kg.add_entity(caller, "SYMBOL", source=rel)
-            did = kg.add_entity(callee, "SYMBOL", source=rel)
+            # `rel` is the call site, not necessarily the definition of caller/callee —
+            # record it on the relation only; the projector owns entity `source`.
+            cid = kg.add_entity(caller, "SYMBOL")
+            did = kg.add_entity(callee, "SYMBOL")
             kg.add_relation(cid, did, "calls", source=rel)
             added += 1
     kg.commit()

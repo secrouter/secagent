@@ -39,6 +39,14 @@ def test_add_and_count_and_rerun_merges(tmp_path):
         assert kg.get_entity(first).description == "signs refunds"
 
 
+def test_source_is_definition_first_not_last_writer(tmp_path):
+    with KnowledgeGraph(tmp_path) as kg:
+        eid = kg.add_entity("foo", "SYMBOL", source="def.py")  # projector: the definition
+        kg.add_entity("foo", "SYMBOL", source="caller.py")  # later call-edge write
+        kg.commit()
+        assert kg.get_entity(eid).source == "def.py", "defining file must not be overwritten"
+
+
 def test_relations_and_aliases_dedup(tmp_path):
     with KnowledgeGraph(tmp_path) as kg:
         a = kg.add_entity("Refund approvals", "POLICY")

@@ -112,9 +112,13 @@ class KnowledgeGraph:
         """Upsert an entity; returns its computed id.
 
         Idempotent by id: a re-extraction of the same (type, name) updates name/type and
-        fills a non-empty description/source, so re-runs merge rather than duplicate. A
-        blank incoming description never clobbers a populated one (a later, richer
-        extraction can add detail; an emptier pass cannot erase it).
+        fills a blank description/source, so re-runs merge rather than duplicate. Both
+        ``description`` and ``source`` are first-non-empty-wins and must stay in lockstep:
+        when several same-named symbols across files collide onto one entity, the note's
+        file and its signature have to describe the SAME definition (the first projected),
+        not a file from one and a signature from another. A blank pass never erases a
+        populated field, so a later call-edge write (whose file is a *calling* site, not a
+        definition) cannot overwrite the defining file the projector recorded.
         """
         eid = entity_id(type_, name)
         self.db.execute(
@@ -124,9 +128,9 @@ class KnowledgeGraph:
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 type = excluded.type,
-                description = CASE WHEN excluded.description != ''
+                description = CASE WHEN kg_entities.description = '' AND excluded.description != ''
                                    THEN excluded.description ELSE kg_entities.description END,
-                source = CASE WHEN excluded.source != ''
+                source = CASE WHEN kg_entities.source = '' AND excluded.source != ''
                               THEN excluded.source ELSE kg_entities.source END
             """,
             (eid, name, type_, description, source),
@@ -201,28 +205,40 @@ class KnowledgeGraph:
         return Entity(r["id"], r["name"], r["type"], r["description"], r["source"])
 
     # -- traversal primitives (see recall.py) --------------------------------
-    def seed(self, terms: Iterable[str], *, limit: int = 20) -> list[str]:
+    def seed(
+        self, terms: Iterable[str], *, limit: int = 20, max_matches_per_term: int = 6
+    ) -> list[str]:
         """Ids of entities whose name or an alias exactly matches one of ``terms``.
 
         The first traversal job: turn the question's words into starting points. Matching
         is exact on the normalised term (case-insensitive) against ``name`` and against
-        ``kg_aliases.alias`` — lexical seeding, the documented Tier-1 limit; embedding
-        seeding is the same-design extension for questions that name no known entity.
+        ``kg_aliases.alias`` — lexical seeding, the documented Tier-1 limit.
+
+        A term that matches more than ``max_matches_per_term`` entities is a generic word
+        (a bare ``run``/``close`` many symbols share), not a useful anchor, so it is
+        dropped rather than seeding a large, unfocused subgraph — the complement of the
+        stopword list in recall, which drops generic words before they ever reach here.
         """
         terms = [t for t in {t.strip().lower() for t in terms} if t]
         if not terms:
             return []
-        placeholders = ",".join("?" for _ in terms)
-        rows = self.db.execute(
-            f"""
-            SELECT id FROM kg_entities WHERE lower(name) IN ({placeholders})
-            UNION
-            SELECT entity_id FROM kg_aliases WHERE lower(alias) IN ({placeholders})
-            LIMIT ?
-            """,
-            (*terms, *terms, limit),
-        ).fetchall()
-        return [r["id"] for r in rows]
+        out: list[str] = []
+        seen: set[str] = set()
+        for term in terms:
+            rows = self.db.execute(
+                "SELECT id FROM kg_entities WHERE lower(name)=? "
+                "UNION SELECT entity_id FROM kg_aliases WHERE lower(alias)=?",
+                (term, term),
+            ).fetchall()
+            if len(rows) > max_matches_per_term:
+                continue
+            for r in rows:
+                if r["id"] not in seen:
+                    seen.add(r["id"])
+                    out.append(r["id"])
+                    if len(out) >= limit:
+                        return out
+        return out
 
     def walk(self, seed_ids: Iterable[str], *, hops: int) -> dict[str, int]:
         """The second traversal job: from the seeds, collect every connected entity hop
