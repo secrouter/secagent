@@ -16,6 +16,8 @@
  */
 
 import { execFile } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 // Minimal structural typing so this compiles without pi's types present; at runtime
 // pi injects the real ExtensionAPI. A tool result's `content` is an ARRAY of content
@@ -138,6 +140,91 @@ const obj = (props: Record<string, unknown>, required: string[] = []) => ({
   properties: props,
   required,
 });
+
+// ── Analysis containers (heavyweight tooling that is NOT in this runtime's own image) ─────────
+//
+// Two runtimes, one tool:
+//   • KUBERNETES POOL POD: the deployment attached analysis SIDECARS sharing this pod's
+//     /workspace volume (see secchat docs/agent-pool.md). `SECCHAT_ANALYSIS` names them; the
+//     invocation seam is a file work-queue on the shared volume (containers can't exec into
+//     each other): write `<dir>/.analysis/<name>/request`, the sidecar runs it with its own
+//     tooling, poll `exit` + read `output`.
+//   • LOCAL DOCKER (desktop daemon / host pi): `SECAGENT_ANALYSIS_IMAGES` (name=image CSV)
+//     names locally runnable analyzer images; the tool `docker run`s the image with the
+//     workspace mounted, entrypoint overridden to `sh -c <command>` — the SAME command
+//     contract as the sidecar queue. Offline by default (`--network none`), matching the
+//     analyzer images' own documented posture; opt out with SECAGENT_ANALYSIS_EGRESS=1.
+// A name present in BOTH prefers the in-pod sidecar (no docker needed there).
+
+function queueAnalyzers(): string[] {
+  return (process.env.SECCHAT_ANALYSIS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+function dockerAnalyzers(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const entry of (process.env.SECAGENT_ANALYSIS_IMAGES ?? "").split(",")) {
+    const eq = entry.indexOf("=");
+    if (eq > 0) {
+      const name = entry.slice(0, eq).trim();
+      const image = entry.slice(eq + 1).trim();
+      if (name && image) out[name] = image;
+    }
+  }
+  return out;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Run a command in an in-pod analysis sidecar via the shared-volume work queue. */
+async function runQueueAnalysis(name: string, command: string, timeoutS: number): Promise<ToolResult> {
+  const dir = join(process.env.SECCHAT_ANALYSIS_DIR || "/workspace", ".analysis", name);
+  try {
+    mkdirSync(dir, { recursive: true });
+    // A leftover result from a prior request must not be mistaken for this one's.
+    for (const f of ["exit", "output"]) {
+      try { unlinkSync(join(dir, f)); } catch { /* absent is fine */ }
+    }
+    writeFileSync(join(dir, "request"), command, "utf8");
+  } catch (err) {
+    return toolError(`ERROR: could not queue the request for '${name}': ${(err as Error).message}`);
+  }
+  const deadline = Date.now() + timeoutS * 1000;
+  while (Date.now() < deadline) {
+    if (existsSync(join(dir, "exit"))) {
+      const code = readFileSync(join(dir, "exit"), "utf8").trim();
+      let output = "";
+      try { output = readFileSync(join(dir, "output"), "utf8"); } catch { /* no output */ }
+      const isError = code !== "0";
+      return { content: [{ type: "text", text: `exit ${code}\n${output}`.trim() }], isError };
+    }
+    await sleep(1000);
+  }
+  return toolError(
+    `ERROR: analyzer '${name}' did not finish within ${timeoutS}s — the request may still be ` +
+    "running; retry with a larger timeout_s, or check /workspace/.analysis/" + name + "/",
+  );
+}
+
+/** Run a command in a local analyzer container (docker), workspace mounted, offline by default. */
+function runDockerAnalysis(image: string, command: string, timeoutS: number, cwd: string): Promise<ToolResult> {
+  const network = process.env.SECAGENT_ANALYSIS_EGRESS === "1" ? [] : ["--network", "none"];
+  const argv = [
+    "run", "--rm", ...network,
+    "-v", `${cwd}:/workspace`, "-w", "/workspace",
+    "--entrypoint", "sh", image, "-c", command,
+  ];
+  return new Promise((resolve) => {
+    execFile("docker", argv, { maxBuffer: 8 * 1024 * 1024, timeout: timeoutS * 1000 },
+      (err, stdout, stderr) => {
+        const text = `${stdout ?? ""}${stderr ? `\n${stderr}` : ""}`.trim();
+        if (err) {
+          resolve({ content: [{ type: "text", text: `ERROR: ${text || err.message}` }], isError: true });
+        } else {
+          resolve({ content: [{ type: "text", text: text || "(no output)" }], isError: false });
+        }
+      });
+  });
+}
 
 export default function (pi: ExtensionAPI): void {
   const repoArg = () => REPO();
@@ -411,4 +498,49 @@ export default function (pi: ExtensionAPI): void {
       pi.sendUserMessage(res.text);
     },
   });
+
+  // --- analysis containers (in-pod sidecars OR local docker) -----------------
+  // Registered ONLY when at least one analyzer is available in this runtime, so the model
+  // never sees a tool it can't use. The description enumerates what IS available — that's
+  // how the agent learns the analyzers exist (tools are self-describing; no primer needed).
+  const queued = queueAnalyzers();
+  const dockered = dockerAnalyzers();
+  const available = [...new Set([...queued, ...Object.keys(dockered)])].sort();
+  if (available.length > 0) {
+    pi.registerTool({
+      name: "analysis_run",
+      label: "analysis container",
+      description:
+        `Run a shell command inside an ANALYSIS TOOLING container that shares this workspace — ` +
+        `use it for heavyweight analyzers not installed here. Available: ${available.join(", ")}. ` +
+        `The command runs with the analyzer's own tooling on PATH and the workspace as cwd ` +
+        `(e.g. analyzer "rust" → "rust-analyzer --version", or the secagent analyzers' own CLIs). ` +
+        `Output (stdout+stderr) and the exit code come back when it finishes.`,
+      parameters: obj(
+        {
+          analyzer: { type: "string", description: `Which analyzer: ${available.join(" | ")}` },
+          command: { type: "string", description: "Shell command to run in the analyzer container (cwd = the shared workspace)." },
+          timeout_s: { type: "number", description: "Seconds to wait before giving up (default 300)." },
+        },
+        ["analyzer", "command"],
+      ),
+      execute: async (_toolCallId, params) => {
+        const a = params ?? {};
+        const analyzer = requireArg(a, "analyzer");
+        const command = requireArg(a, "command");
+        if (!analyzer || !command) {
+          return toolError("ERROR: 'analyzer' and 'command' are both required non-empty strings.");
+        }
+        const timeoutS = typeof a.timeout_s === "number" && a.timeout_s > 0 ? a.timeout_s : 300;
+        // In-pod sidecar first (no docker inside a pod); local docker otherwise.
+        if (queued.includes(analyzer)) {
+          return runQueueAnalysis(analyzer, command, timeoutS);
+        }
+        if (dockered[analyzer]) {
+          return runDockerAnalysis(dockered[analyzer]!, command, timeoutS, REPO());
+        }
+        return toolError(`ERROR: no such analyzer '${analyzer}'. Available: ${available.join(", ")}.`);
+      },
+    });
+  }
 }

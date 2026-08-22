@@ -73,3 +73,26 @@ installed pi version if it differs.
 pi runs on Node.js. Run it with `--enable-fips` (the container sets
 `NODE_OPTIONS=--enable-fips`) on a FIPS host so pi uses the validated OpenSSL module.
 All of secagent's hashing/TLS/secret handling stays in the Python layer. See {doc}`fips`.
+
+## Analysis containers (the `analysis_run` tool)
+
+The extension registers an `analysis_run` tool when analysis tooling containers are available in
+the runtime — heavyweight analyzers (IKOS, Roslyn, rust-analyzer — the images under `docker/`)
+that don't belong in the agent's own image. One tool, two runtimes:
+
+- **Kubernetes pool pod** (SecChat's agent pool): the deployment attaches analyzer *sidecars*
+  sharing the pod's `/workspace` volume. `SECCHAT_ANALYSIS` (comma-separated names, set on the
+  pod) enables them; invocation is a file work-queue on the shared volume — the tool writes
+  `<dir>/.analysis/<name>/request`, the sidecar executes it with its own tooling, and the tool
+  polls `exit` / returns `output`. `SECCHAT_ANALYSIS_DIR` overrides the queue root (default
+  `/workspace`).
+- **Local docker** (desktop daemon / host pi): `SECAGENT_ANALYSIS_IMAGES`
+  (`name=image,name=image`) names locally runnable analyzer images; the tool `docker run`s the
+  image with the workspace mounted at `/workspace` (cwd), entrypoint overridden to
+  `sh -c <command>` — the same command contract as the sidecar queue. **Offline by default**
+  (`--network none`), matching the analyzer images' documented posture; set
+  `SECAGENT_ANALYSIS_EGRESS=1` to allow network.
+
+A name available in both prefers the in-pod sidecar. The tool registers only when at least one
+analyzer is available, and its description enumerates them — the model discovers the capability
+through the tool itself, no prompt engineering required.
