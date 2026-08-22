@@ -11,6 +11,7 @@ from secagent.affordances.models import CallEdge
 from secagent.config import Settings
 from secagent.kg import extractors
 from secagent.kg import project as kg_project
+from secagent.kg.pyjedi import python_semantic_available
 from secagent.kg.store import KnowledgeGraph
 
 
@@ -186,6 +187,10 @@ def test_heavy_covered_language_gets_no_light_duplicate_in_mixed_repo(tmp_path, 
 
 # -- end-to-end: deep=True actually uses jedi and resolves obj.method() -----------------
 
+@pytest.mark.skipif(
+    not python_semantic_available(),
+    reason="jedi (the python-semantic extra) is not installed — the deep path degrades to light",
+)
 def test_deep_build_resolves_obj_method_the_light_path_drops(tmp_path):
     repo = tmp_path / "proj"
     repo.mkdir()
