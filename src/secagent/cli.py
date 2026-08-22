@@ -351,6 +351,12 @@ def pi_run(
     just without the ``-e`` (clean fallback).
 
     Replaces the current process with pi (``os.execvpe``), so its exit code + signals pass through.
+
+    HEADLESS runs (``-p``/``--print`` in the pass-through args) are the exception: they run pi as a
+    child process instead, so the pi guard (see ``piguard.py``) can clamp mis-declared context
+    windows before launch and report afterwards whether the run actually changed anything — a
+    context-exhausted headless pi prints nothing and exits 0, and without the guard that silent
+    no-op is indistinguishable from success. Interactive runs keep the exec path untouched.
     """
     from . import leanctx as lc
 
@@ -379,7 +385,54 @@ def pi_run(
                 "[yellow]secagent pi run:[/yellow] knowledge_graph.inject is on but no extension "
                 "path resolves (set knowledge_graph.extension or $SECAGENT_KG_EXTENSION) — "
                 "launching pi without KG injection.")
-    lc.launch_pi(cfg, pi_args, pi_bin=pi_bin, extra_env=extra_env or None)
+
+    from . import piguard
+
+    if not piguard.is_headless(pi_args):
+        # Interactive: the operator sees pi's own output, so no guard — keep the exec
+        # launch (signals + exit code pass straight through) exactly as it was.
+        lc.launch_pi(cfg, pi_args, pi_bin=pi_bin, extra_env=extra_env or None)
+        return
+
+    # Headless (-p/--print): a context-dead pi prints nothing and exits 0, so run it as a
+    # child and report what actually happened. Preflight first: clamp any models.json
+    # contextWindow the server can't serve (the usual way these runs start dying).
+    import subprocess
+    import time
+
+    agent_dir = Path(os.environ.get("PI_CODING_AGENT_DIR") or "~/.pi/agent").expanduser()
+    for note in piguard.preflight_context(agent_dir):
+        err_console.print(f"[yellow]pi-guard:[/yellow] {note}")
+
+    cwd = Path.cwd()
+    before = piguard.snapshot_worktree(cwd)
+    started = time.time()
+    exit_code = {"code": 0}
+
+    def _run_fn(pi_bin_: str, argv: list[str], env: dict[str, str]) -> None:
+        # launch_pi still owns the argv/env assembly (extension -e, lockdown env, ...);
+        # only the exec is swapped for a child run so we regain control afterwards.
+        exit_code["code"] = subprocess.run(argv, env=env, check=False).returncode
+
+    lc.launch_pi(cfg, pi_args, pi_bin=pi_bin, extra_env=extra_env or None, exec_fn=_run_fn)
+
+    changes = piguard.diff_worktree(before, piguard.snapshot_worktree(cwd))
+    verdict = piguard.session_verdict(agent_dir, cwd, started)
+    if changes:
+        err_console.print(f"pi-guard: {len(changes)} file(s) changed")
+        for line in changes:
+            err_console.print(f"pi-guard:   {line}")
+    else:
+        err_console.print("pi-guard: no files changed")
+    if verdict:
+        err_console.print(f"pi-guard: {verdict}")
+    if not changes and verdict:
+        # The silent no-op this guard exists for: exit 0, no output, no work — make it
+        # impossible to mistake for success.
+        err_console.print(
+            "[bold red]pi-guard: SILENT NO-OP DETECTED[/bold red] — headless pi made no "
+            "file changes and its session transcript indicates context exhaustion.")
+    raise typer.Exit(code=exit_code["code"])
 
 
 @app.command()

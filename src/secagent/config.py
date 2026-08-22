@@ -677,6 +677,16 @@ class LeanCtxConfig(BaseModel):
     # ctx_* tools; "replace" exposes only the compressed ctx_* tools (LEAN_CTX_PI_MODE).
     pi_mode: Literal["additive", "replace"] = "additive"
 
+    # Workspace roots LeanCTX's path jail must cover, written to config.toml as
+    # ``allow_paths``. The jail otherwise admits only the DAEMON's own project root — and
+    # the daemon is long-lived, so that root is wherever the daemon happened to be started
+    # (observed live: the npm install dir), NOT the workspace pi is running in. With the
+    # jail wrong, EVERY ctx_read/ctx_ls errors "path escapes project root", and a small
+    # model retries the identical call until context death (439 identical calls in one
+    # session — see the eval record). List every tree secagent drives agents in, e.g.
+    # ["~/work"]. Empty (the default) leaves the jail at the daemon root alone.
+    allow_paths: list[str] = []
+
     # Register LeanCTX's advanced MCP tools with pi (ctx_session/knowledge/semantic_search/
     # repomap/callgraph/impact/pack). OFF by default: several read the persistent store
     # (below) and widen the tool surface; the always-available CLI-backed ctx_* tools give

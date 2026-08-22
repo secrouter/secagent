@@ -101,6 +101,15 @@ def config_toml(cfg: LeanCtxConfig) -> str:
         "structure_first = true",        # structure-first cold reads
         "proxy_enabled = true",          # the wire compressor (agent/secagent → SecRouter)
         f"proxy_port = {endpoint_port(cfg)}",
+    ]
+    if cfg.allow_paths:
+        # Path-jail coverage for the workspaces agents actually run in. The daemon's own
+        # project root is wherever the LONG-LIVED daemon was started (observed live: the
+        # npm install dir) — without these, every ctx_read outside that root errors
+        # "path escapes project root" and a small model retries itself to context death.
+        joined = ", ".join(f'"{p}"' for p in cfg.allow_paths)
+        lines += [f"allow_paths = [{joined}]"]
+    lines += [
         "",
         "[proxy]",
         f'history_mode = "{cfg.proxy_history_mode}"',   # keep the SecRouter prompt cache hitting
