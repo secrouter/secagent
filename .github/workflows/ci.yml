@@ -18,7 +18,9 @@ jobs:
         # grammars). The C/C++ attribution, symbol-survival and testgen tests assert the
         # ACCURATE analysis path — without these the suite runs on the regex fallback and
         # those tests fail. All ship prebuilt wheels, so no toolchain is needed on CI.
-        run: python -m pip install -e ".[docs,review,tokenizer,dev,clang,csharp,rust]"
+        # python-semantic (jedi): the KG deep-path test skips without it, because
+        # deep=True silently degrades to the light extractor when jedi is absent.
+        run: python -m pip install -e ".[docs,review,tokenizer,dev,clang,csharp,rust,python-semantic]"
       - name: Lint
         run: ruff check src tests
       - name: Type check
