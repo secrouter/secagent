@@ -358,15 +358,18 @@ def _pep562_exports(node: ast.FunctionDef | ast.AsyncFunctionDef, rel_path: str)
 
 def _sig(node: ast.AST) -> str:
     if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-        args = [a.arg for a in node.args.args]
-        if node.args.vararg:
-            args.append("*" + node.args.vararg.arg)
-        if node.args.kwarg:
-            args.append("**" + node.args.kwarg.arg)
         prefix = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
-        return f"{prefix} {node.name}({', '.join(args)})"
+        # ast.unparse renders the WHOLE argument list — positional, ``*args``,
+        # keyword-only (``*, description=""``), annotations and defaults — which the old
+        # positional-only reconstruction dropped, truncating signatures like
+        # ``add_entity(self, name, type_)`` and losing exactly the params a "what breaks
+        # if I change this" question needs. Include the return annotation too.
+        args = ast.unparse(node.args)
+        ret = f" -> {ast.unparse(node.returns)}" if node.returns else ""
+        return f"{prefix} {node.name}({args}){ret}"
     if isinstance(node, ast.ClassDef):
-        return f"class {node.name}"
+        bases = ", ".join(ast.unparse(b) for b in node.bases)
+        return f"class {node.name}({bases})" if bases else f"class {node.name}"
     return ""
 
 

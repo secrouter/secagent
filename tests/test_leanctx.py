@@ -50,6 +50,17 @@ def test_config_toml_persist_on_omits_memory_off():
     assert "enabled = false" not in leanctx.config_toml(LeanCtxConfig(persist_context=True))
 
 
+def test_config_toml_allow_paths():
+    # The path jail must cover the workspaces agents run in — the daemon's own root is
+    # wherever the long-lived daemon started (observed live: the npm install dir), so
+    # without allow_paths every ctx_read outside it errors and small models retry the
+    # identical call to context death.
+    toml = leanctx.config_toml(LeanCtxConfig(allow_paths=["/work/a", "~/evals"]))
+    assert 'allow_paths = ["/work/a", "~/evals"]' in toml
+    # Default (empty) emits no allow_paths line at all — daemon-root jail unchanged.
+    assert "allow_paths" not in leanctx.config_toml(LeanCtxConfig())
+
+
 def test_lockdown_env_enforces_airgapped_posture():
     env = leanctx.lockdown_env(LeanCtxConfig())
     assert env["LEAN_CTX_NO_UPDATE_CHECK"] == "1"     # no update phone-home

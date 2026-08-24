@@ -1,0 +1,10 @@
+{
+  "name": "kg-tscalls",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Semantic TS/JS call extraction for secagent's KG (TypeScript compiler API).",
+  "type": "module",
+  "dependencies": {
+    "typescript": "^5.4"
+  }
+}

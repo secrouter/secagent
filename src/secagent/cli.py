@@ -8,6 +8,7 @@ commands (``doctor``, ``version``, ``config``) work even when optional extras
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import typer
@@ -31,6 +32,9 @@ aff_app = typer.Typer(
 )
 audit_app = typer.Typer(help="Audit log operations (CMMC-1 / NIST 800-171 AU).")
 pi_app = typer.Typer(help="Launch the pi coding agent with LeanCTX + secagent wired in.")
+kg_app = typer.Typer(
+    help="Knowledge graph: build a push-retrieval graph and recall facts for a prompt."
+)
 app.add_typer(docs_app, name="docs")
 app.add_typer(review_app, name="review")
 app.add_typer(analyze_app, name="analyze")
@@ -38,6 +42,7 @@ app.add_typer(mcp_app, name="mcp")
 app.add_typer(aff_app, name="affordance")
 app.add_typer(audit_app, name="audit")
 app.add_typer(pi_app, name="pi")
+app.add_typer(kg_app, name="kg")
 
 console = Console()
 # Informational lines that must never land in a piped/redirected result (a JSON
@@ -48,6 +53,20 @@ err_console = Console(stderr=True)
 
 def _settings(config: str | None):
     return load_settings(config)
+
+
+def _kg_extension_path(configured: str) -> Path | None:
+    """Resolve the secagent-kg pi extension path, or None if none is set/found.
+
+    ``$SECAGENT_KG_EXTENSION`` wins over the config value (the container bakes its own
+    path, mirroring ``SECAGENT_PI_LEANCTX_EXTENSION``); a path that doesn't exist resolves
+    to None so a stale setting degrades to "no injection" rather than crashing pi.
+    """
+    raw = os.environ.get("SECAGENT_KG_EXTENSION") or configured
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    return path if path.exists() else None
 
 
 @app.command()
@@ -332,16 +351,88 @@ def pi_run(
     just without the ``-e`` (clean fallback).
 
     Replaces the current process with pi (``os.execvpe``), so its exit code + signals pass through.
+
+    HEADLESS runs (``-p``/``--print`` in the pass-through args) are the exception: they run pi as a
+    child process instead, so the pi guard (see ``piguard.py``) can clamp mis-declared context
+    windows before launch and report afterwards whether the run actually changed anything — a
+    context-exhausted headless pi prints nothing and exits 0, and without the guard that silent
+    no-op is indistinguishable from success. Interactive runs keep the exec path untouched.
     """
     from . import leanctx as lc
 
-    cfg = _settings(config).leanctx
+    settings = _settings(config)
+    cfg = settings.leanctx
     pi_args = list(ctx.args)
     if cfg.enabled and lc.pi_extension_entry() is None:
         err_console.print(
             "[yellow]secagent pi run:[/yellow] LeanCTX is enabled but the pi-lean-ctx extension "
             "isn't installed — launching pi without it. Run `secagent init` to install it.")
-    lc.launch_pi(cfg, pi_args, pi_bin=pi_bin)
+
+    # Auto-attach the knowledge-graph injection extension when opted in, mirroring how
+    # LeanCTX attaches its own extension: another `-e`, plus the recall knobs as env the
+    # extension reads. Retrieval stays deterministic and pre-turn (see pi/extensions/
+    # secagent-kg.ts). If inject is on but no extension path resolves, pi still launches.
+    extra_env: dict[str, str] = {}
+    kg = settings.knowledge_graph
+    if kg.inject:
+        ext = _kg_extension_path(kg.extension)
+        if ext is not None:
+            pi_args = ["-e", str(ext), *pi_args]
+            extra_env["SECAGENT_KG_HOPS"] = str(kg.hops)
+            extra_env["SECAGENT_KG_TOP_K"] = str(kg.top_k)
+        else:
+            err_console.print(
+                "[yellow]secagent pi run:[/yellow] knowledge_graph.inject is on but no extension "
+                "path resolves (set knowledge_graph.extension or $SECAGENT_KG_EXTENSION) — "
+                "launching pi without KG injection.")
+
+    from . import piguard
+
+    if not piguard.is_headless(pi_args):
+        # Interactive: the operator sees pi's own output, so no guard — keep the exec
+        # launch (signals + exit code pass straight through) exactly as it was.
+        lc.launch_pi(cfg, pi_args, pi_bin=pi_bin, extra_env=extra_env or None)
+        return
+
+    # Headless (-p/--print): a context-dead pi prints nothing and exits 0, so run it as a
+    # child and report what actually happened. Preflight first: clamp any models.json
+    # contextWindow the server can't serve (the usual way these runs start dying).
+    import subprocess
+    import time
+
+    agent_dir = Path(os.environ.get("PI_CODING_AGENT_DIR") or "~/.pi/agent").expanduser()
+    for note in piguard.preflight_context(agent_dir):
+        err_console.print(f"[yellow]pi-guard:[/yellow] {note}")
+
+    cwd = Path.cwd()
+    before = piguard.snapshot_worktree(cwd)
+    started = time.time()
+    exit_code = {"code": 0}
+
+    def _run_fn(pi_bin_: str, argv: list[str], env: dict[str, str]) -> None:
+        # launch_pi still owns the argv/env assembly (extension -e, lockdown env, ...);
+        # only the exec is swapped for a child run so we regain control afterwards.
+        exit_code["code"] = subprocess.run(argv, env=env, check=False).returncode
+
+    lc.launch_pi(cfg, pi_args, pi_bin=pi_bin, extra_env=extra_env or None, exec_fn=_run_fn)
+
+    changes = piguard.diff_worktree(before, piguard.snapshot_worktree(cwd))
+    verdict = piguard.session_verdict(agent_dir, cwd, started)
+    if changes:
+        err_console.print(f"pi-guard: {len(changes)} file(s) changed")
+        for line in changes:
+            err_console.print(f"pi-guard:   {line}")
+    else:
+        err_console.print("pi-guard: no files changed")
+    if verdict:
+        err_console.print(f"pi-guard: {verdict}")
+    if not changes and verdict:
+        # The silent no-op this guard exists for: exit 0, no output, no work — make it
+        # impossible to mistake for success.
+        err_console.print(
+            "[bold red]pi-guard: SILENT NO-OP DETECTED[/bold red] — headless pi made no "
+            "file changes and its session transcript indicates context exhaustion.")
+    raise typer.Exit(code=exit_code["code"])
 
 
 @app.command()
@@ -1274,6 +1365,75 @@ def mcp_gitlab(
 
     settings = _settings(config)
     serve_stdio(settings)
+
+
+# -- knowledge graph -------------------------------------------------------------
+@kg_app.command("build")
+def kg_build(
+    repo: Path = typer.Argument(..., help="Repo to build the knowledge graph for."),
+    deep: bool = typer.Option(
+        False, "--deep",
+        help="Use the semantic (type-resolved) call extractor per language where "
+             "available, instead of the fast syntactic one (e.g. jedi for Python)."),
+    config: str | None = typer.Option(None, "--config", "-c"),
+) -> None:
+    """(Re)build the knowledge graph for a repo by projecting its affordances.
+
+    Indexes the repo first if needed. Deterministic and idempotent — no LLM. Writes the
+    ``kg_*`` tables into the repo's ``.secagent/index.db``.
+    """
+    from .kg import project
+
+    counts = project.build(repo, _settings(config), deep=deep)
+    err_console.print(
+        f"knowledge graph: {counts['entities']} entities, {counts['relations']} relations, "
+        f"{counts['aliases']} aliases"
+    )
+
+
+@kg_app.command("recall")
+def kg_recall(
+    repo: Path = typer.Argument(..., help="Repo whose graph to query."),
+    prompt: str = typer.Option(..., "--prompt", "-p", help="The question/prompt to seed on."),
+    hops: int = typer.Option(3, "--hops", help="Max traversal depth from the seeds."),
+    top_k: int = typer.Option(8, "--top-k", help="Max facts to return."),
+    as_json: bool = typer.Option(False, "--json", help="Emit structured JSON instead of text."),
+) -> None:
+    """Recall facts for ``prompt`` from a repo's graph and print them.
+
+    This is what the pre-prompt injection hook calls: deterministic, millisecond
+    retrieval. Prints the recall text on stdout (first line is the counts summary), or
+    ``--json`` for the structured facts/notes. A miss prints ``memory: no matches``.
+    """
+    from .kg import recall as recall_mod
+    from .kg.store import KnowledgeGraph
+
+    with KnowledgeGraph(repo) as kg:
+        result = recall_mod.recall(kg, prompt, hops=hops, top_k=top_k)
+    if as_json:
+        print(json.dumps({
+            "facts": [f.to_dict() for f in result.facts],
+            "notes": [n.to_dict() for n in result.notes],
+            "seed_count": result.seed_count,
+            "hops": result.hops,
+        }))
+    else:
+        print(result.as_text())
+
+
+@kg_app.command("stats")
+def kg_stats(
+    repo: Path = typer.Argument(..., help="Repo whose graph to summarize."),
+) -> None:
+    """Print the graph's entity/relation/alias counts."""
+    from .kg.store import KnowledgeGraph
+
+    with KnowledgeGraph(repo) as kg:
+        counts = kg.counts()
+    console.print(
+        f"entities: {counts['entities']}  relations: {counts['relations']}  "
+        f"aliases: {counts['aliases']}"
+    )
 
 
 if __name__ == "__main__":

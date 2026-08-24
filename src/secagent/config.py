@@ -677,6 +677,16 @@ class LeanCtxConfig(BaseModel):
     # ctx_* tools; "replace" exposes only the compressed ctx_* tools (LEAN_CTX_PI_MODE).
     pi_mode: Literal["additive", "replace"] = "additive"
 
+    # Workspace roots LeanCTX's path jail must cover, written to config.toml as
+    # ``allow_paths``. The jail otherwise admits only the DAEMON's own project root — and
+    # the daemon is long-lived, so that root is wherever the daemon happened to be started
+    # (observed live: the npm install dir), NOT the workspace pi is running in. With the
+    # jail wrong, EVERY ctx_read/ctx_ls errors "path escapes project root", and a small
+    # model retries the identical call until context death (439 identical calls in one
+    # session — see the eval record). List every tree secagent drives agents in, e.g.
+    # ["~/work"]. Empty (the default) leaves the jail at the daemon root alone.
+    allow_paths: list[str] = []
+
     # Register LeanCTX's advanced MCP tools with pi (ctx_session/knowledge/semantic_search/
     # repomap/callgraph/impact/pack). OFF by default: several read the persistent store
     # (below) and widen the tool surface; the always-available CLI-backed ctx_* tools give
@@ -728,6 +738,37 @@ class LeanCtxConfig(BaseModel):
         return (urlsplit(self.endpoint).hostname or "") in ("127.0.0.1", "::1", "localhost")
 
 
+class KnowledgeGraphConfig(BaseModel):
+    """Knowledge-graph push-retrieval behaviour.
+
+    The graph itself lives in the affordance store's ``index.db`` (built by
+    ``secagent kg build``); these settings govern the *injection* half — whether and how
+    ``secagent pi run`` pushes recalled facts into a pi turn before the model runs.
+    """
+
+    # Inject recalled facts into pi's context before each prompt. Off by default: it
+    # changes every turn's context, so it's opt-in — turn it on once a repo's graph is
+    # built and you want deterministic, pre-turn retrieval instead of the model searching.
+    inject: bool = False
+    # Max traversal depth from the seeded entities (a 3-hop chain is three edges).
+    hops: int = 3
+    # Max facts injected per prompt — the fixed-cost budget the design keeps constant at
+    # any corpus size.
+    top_k: int = 8
+    # Path to the secagent-kg pi extension, for ``secagent pi run`` to auto-attach via
+    # ``-e`` when ``inject`` is on. Empty = don't auto-attach (attach it yourself with
+    # ``pi --extension``). The container/SecChat sets this to its baked-in copy, mirroring
+    # ``SECAGENT_PI_LEANCTX_EXTENSION`` for the LeanCTX extension.
+    extension: str = ""
+    # Use the semantic ("heavy") call extractor per language when building the graph
+    # (``secagent kg build --deep``), not just the fast syntactic one — e.g. jedi for
+    # Python resolves ``obj.method()`` to its real definition. Off by default: heavy
+    # extraction is slower and its per-language module may not be installed (see
+    # ``secagent.kg.extractors``); a build with ``deep=True`` falls back to the light
+    # extractor for any language whose heavy module is unavailable.
+    deep: bool = False
+
+
 class Settings(BaseSettings):
     """Root settings object."""
 
@@ -751,6 +792,7 @@ class Settings(BaseSettings):
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
     scan: ScanConfig = Field(default_factory=ScanConfig)
     testgen: TestGenConfig = Field(default_factory=TestGenConfig)
+    knowledge_graph: KnowledgeGraphConfig = Field(default_factory=KnowledgeGraphConfig)
 
     def safe_dict(self) -> dict[str, Any]:
         """Config dump with secrets redacted — safe to log."""
@@ -864,6 +906,7 @@ def _pristine_dump() -> dict[str, Any]:
             "analysis": AnalysisConfig().model_dump(),
             "scan": ScanConfig().model_dump(),
             "testgen": TestGenConfig().model_dump(),
+            "knowledge_graph": KnowledgeGraphConfig().model_dump(),
         }
     ).model_dump()
 
