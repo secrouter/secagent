@@ -260,6 +260,12 @@ The extras below are unrelated to onboarding and install with `pip install
   heuristic when absent, so secagent works air-gapped without downloading tokenizer
   assets.
 
+`leanctx`
+: LeanCTX context compression of secagent's own SecRouter calls (the wire compressor +
+  `ctx_*` tools for pi come from the separate `lean-ctx` binary + npm extension, not this
+  extra). Absent → secagent's own calls pass through uncompressed, never blocked. See
+  {doc}`leanctx`.
+
 `clang`
 : accurate C/C++ functions + inter-file call map via libclang. Absent → regex symbols.
 
@@ -274,6 +280,23 @@ The extras below are unrelated to onboarding and install with `pip install
   the trait/impl graph, the heavy rust-analyzer backend runs in an optional container
   (`make analyzer-rust`); see {doc}`design/heavy-analysis-pipeline`.
 
+`go` / `typescript`
+: Go and TypeScript/JavaScript call edges for the **knowledge graph** (`secagent kg
+  build`), via their respective tree-sitter grammars (no Go toolchain or `tsc` needed).
+  Absent → that language keeps symbols/imports but has no `calls` edges in the KG. See
+  {doc}`knowledge-graph`.
+
+`python-semantic`
+: type-resolved Python call edges for the knowledge graph's `--deep` pass — `jedi`
+  infers a receiver's type so `obj.method()` resolves to its real definition. Absent →
+  Python falls back to the fast, name-based (syntactic) extractor. See
+  {doc}`knowledge-graph`.
+
+`supplychain`
+: SBOM generation (`make sbom`, CycloneDX) and dependency CVE scanning (`make
+  audit-deps`, `pip-audit`) — CMMC-5. Not needed to run secagent; used by CI and by
+  operators auditing the deployment. See {doc}`cmmc`.
+
 ## Contributing to secagent itself
 
 The steps above install secagent as a *user*. To work on secagent's own source:
@@ -281,17 +304,19 @@ The steps above install secagent as a *user*. To work on secagent's own source:
 ```bash
 git clone https://github.com/secrouter/secagent
 cd secagent
-make dev             # editable install with all extras (needs Python 3.11+)
+make dev             # editable install with the everyday extras (needs Python 3.11+)
 make verify          # ruff + mypy + pytest + secagent doctor
 ```
 
-`make dev` picks a suitable interpreter automatically (handy since the default
-`python3` on macOS is often an older system build, e.g. 3.9). Without `make`, point
+`make dev` installs `.[docs,review,tokenizer,dev]` and picks a suitable interpreter
+automatically (handy since the default `python3` on macOS is often an older system
+build, e.g. 3.9) — CI additionally installs the symbol/call-map and knowledge-graph
+extras (see `.github/workflows/`) to exercise those code paths. Without `make`, point
 pip at Python 3.11+ yourself — a virtualenv keeps it isolated:
 
 ```bash
 python3.11 -m venv .venv && . .venv/bin/activate
-pip install -e ".[docs,review,tokenizer,clang,csharp,dev]"
+pip install -e ".[docs,review,tokenizer,clang,csharp,rust,dev]"
 ```
 
 ## A local model endpoint (no SecRouter yet?)

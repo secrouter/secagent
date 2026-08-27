@@ -2,6 +2,8 @@
 
 **Containerized pi-agents for local (Gemma) models — FIPS-compatible.**
 
+Part of the [SecRouter suite](https://github.com/secrouter/secdeploy#the-suite).
+
 secagent pairs the [**pi** coding agent](https://pi.dev) (the agentic loop) with a
 context-frugal toolset built for *local* models (the Gemma family). **pi is the
 runtime** — it owns the loop, tools (read/write/edit/bash), sessions, and provider
@@ -15,7 +17,7 @@ the integration.)
 
 The toolset is **portable** and **endpoint-agnostic**: pi and secagent both point at any
 OpenAI-compatible endpoint (llama.cpp `llama-server`, vLLM, or a gateway such as
-SecRouter). No model server is bundled.
+[SecRouter](https://github.com/secrouter/secrouter)). No model server is bundled.
 
 The use cases, all built on the same affordance engine:
 
@@ -62,8 +64,8 @@ repo ──► affordance engine ──► .secagent store (sqlite + json, sha25
 
 ## Developer quickstart
 
-Pointing secagent at an **existing SecRouter deployment**, as yourself? One command
-installs it, two more finish setup:
+Pointing secagent at an **existing [SecRouter](https://github.com/secrouter/secrouter)
+deployment**, as yourself? One command installs it, two more finish setup:
 
 ```bash
 ./install.sh                                # install secagent (+ pi, if Node is present)
@@ -73,8 +75,9 @@ secagent login                              # authenticate as yourself (device c
 
 See [docs/installation.md](docs/installation.md) for the full walkthrough — the
 per-user identity (`secagent token --user`), why pi is optional, and how this differs
-from a SecDeploy/service install. The rest of this section covers installing secagent
-from source generally (e.g. for contributing to secagent itself).
+from a [SecDeploy](https://github.com/secrouter/secdeploy)/service install. The rest of
+this section covers installing secagent from source generally (e.g. for contributing to
+secagent itself).
 
 ## Install
 
@@ -83,22 +86,26 @@ picks a suitable interpreter (handy since the default `python3` on macOS is ofte
 older system build):
 
 ```bash
-make dev    # editable install with all extras
+make dev    # editable install with the everyday extras (docs, review, tokenizer, dev)
 ```
 
-Or point pip at Python 3.11+ yourself (a virtualenv keeps it isolated):
+Or point pip at Python 3.11+ yourself (a virtualenv keeps it isolated). This adds the
+symbol/call-map extras too:
 
 ```bash
 python3.11 -m venv .venv && . .venv/bin/activate
-pip install -e ".[docs,review,tokenizer,clang,csharp,dev]"
+pip install -e ".[docs,review,tokenizer,clang,csharp,rust,dev]"
 ```
 
 Extras: `docs` (Sphinx + sphinxcontrib-drawio), `review` (FastAPI webhook server),
 `tokenizer` (precise Gemma token counts; falls back to a heuristic when absent),
-`clang` (accurate C/C++ functions + call map via libclang), `rust` (Rust functions +
-call map via tree-sitter), `csharp` (C# functions +
-call map via tree-sitter), `dev` (ruff/mypy/pytest). All optional — secagent falls back
-to regex symbols when an extra is absent.
+`leanctx` (LeanCTX context compression of secagent's own SecRouter calls),
+`clang` (accurate C/C++ functions + call map via libclang), `csharp` (C# functions +
+call map via tree-sitter), `rust` (Rust functions + call map via tree-sitter),
+`go`/`typescript` (knowledge-graph call edges via tree-sitter), `python-semantic`
+(type-resolved Python call edges via jedi), `dev` (ruff/mypy/pytest), `supplychain`
+(SBOM + `pip-audit` CVE scanning). All optional — secagent falls back to regex symbols
+(or, for the knowledge graph, no call edges for that language) when an extra is absent.
 
 ## Configure
 
@@ -184,6 +191,7 @@ docker compose -f docker/docker-compose.yml run --rm docs  # deterministic docs 
 # Opt-in heavy-toolchain images (not part of `make docker`):
 make docker-analysis                                       # UC3 IKOS/LLVM static analysis
 make analyzer-dotnet                                       # C# heavy analysis (Roslyn/.NET SDK)
+make analyzer-rust                                          # Rust heavy analysis (rust-analyzer/SCIP)
 docker compose -f docker/docker-compose.yml --profile analysis run --rm analysis \
     analyze run /repo /repo/src/foo.c -o /out
 ```
@@ -193,6 +201,11 @@ FIPS-capable UBI9 base. Diagrams render in pure Python by default (no X server o
 browser); pass `--build-arg DIAGRAM_BACKEND=chromium` (headless Chromium) or
 `=drawio` (drawio-desktop + Xvfb) for pixel-faithful draw.io rendering. See
 [docs/fips.md](docs/fips.md).
+
+For CMMC/CUI deployments, secagent also ships opt-in tamper-evident audit logging
+(`audit.enabled`, hash-chained JSONL, `secagent audit verify`) and a `secagent evidence`
+command that writes a self-assessment bundle for an assessor — see
+[docs/cmmc.md](docs/cmmc.md).
 
 ## Architecture
 
@@ -208,7 +221,9 @@ browser); pass `--build-arg DIAGRAM_BACKEND=chromium` (headless Chromium) or
 | Analysis agent (UC3) | `src/secagent/agents/analysis/` | IKOS run/ingest → enrich → triage → report |
 | Scan agent (UC4) | `src/secagent/agents/scan/` | configurable rules → LLM review → report |
 | Testgen agent (UC5) | `src/secagent/agents/testgen/` | structure + IO map → unit + functional tests |
-| Heavy analysis | `tools/secagent-roslyn/`, `src/secagent/affordances/{analysis,heavy}.py` | optional *compiled* backends (C# Roslyn now; C/C++ clang build later) → `secagent-analysis/v1` contract → store. See [docs/design/heavy-analysis-pipeline.md](docs/design/heavy-analysis-pipeline.md) |
+| Heavy analysis | `tools/secagent-roslyn/`, `tools/secagent-rust-analyzer/`, `src/secagent/affordances/{analysis,heavy}.py` | optional *compiled* backends (C# via Roslyn, Rust via rust-analyzer/SCIP — both delivered; C/C++ clang build still planned) → `secagent-analysis/v1` contract → store. See [docs/design/heavy-analysis-pipeline.md](docs/design/heavy-analysis-pipeline.md) |
+| Knowledge graph | `src/secagent/kg/` | push-retrieval code memory for pi: symbols/imports/call edges per language, syntactic by default with semantic (type-resolved) extraction for Python (`jedi`) and Go. See [docs/knowledge-graph.md](docs/knowledge-graph.md) |
+| LeanCTX (optional) | `src/secagent/leanctx.py` | locked-down-by-default context compression of secagent's own SecRouter calls; attaches to pi at launch time. See [docs/leanctx.md](docs/leanctx.md) |
 
 ## Development
 
