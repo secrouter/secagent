@@ -829,6 +829,27 @@ def purge(
     console.print_json(json.dumps(report))
 
 
+@app.command()
+def evidence(
+    config: str | None = typer.Option(None, "--config", "-c"),
+    out: Path = typer.Option(
+        Path("."), "--out", "-o",
+        help="Directory to write the evidence bundle into (default: cwd)"),
+) -> None:
+    """Write a CMMC self-assessment evidence bundle (Spec B.6): audit-chain
+    integrity, a SANITIZED config posture (booleans/hosts/paths, never secrets),
+    the last 200 audit records, and a control self-assessment mirroring
+    docs/cmmc.md's implemented rows. Writes
+    ``<out>/secagent-evidence-<date>.json`` and prints the path. This is evidence
+    for an assessor to review, not a certification -- see {doc}`cmmc`.
+    """
+    from .evidence import write_evidence_bundle
+
+    settings = _settings(config)
+    path = write_evidence_bundle(settings, out_dir=out)
+    console.print(f"Wrote {path}")
+
+
 @docs_app.command("build")
 def docs_build(
     path: Path = typer.Argument(..., help="Repository root to document"),

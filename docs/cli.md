@@ -17,6 +17,7 @@ secagent token [--user]          # print a bearer token: service identity, or --
 secagent index <repo> [--no-llm] [--refresh] [--refresh-summaries] [-v]
                                # build/update the affordance store
 secagent purge <repo> [--yes]    # securely delete a repo's affordance store (CMMC-2)
+secagent evidence [--out DIR]    # write a CMMC self-assessment evidence bundle (JSON)
 ```
 
 `init`/`login`/`logout`/`token --user` are the developer-onboarding surface — see
@@ -181,6 +182,21 @@ secagent audit verify [path]      # verify the audit log's SHA-256 hash chain
 
 Exits non-zero if the chain is broken (edited/inserted/deleted records). Defaults to
 the configured `audit.path`. See {doc}`configuration` and {doc}`cmmc`.
+
+## `secagent evidence`
+
+```text
+secagent evidence [--out DIR]    # write secagent-evidence-<date>.json, print its path
+```
+
+Writes a single JSON evidence bundle for CMMC self-assessment (Spec B.6 shape):
+`product`/`version`/`generatedAt`/`generatedBy`, a SANITIZED `config` posture
+(booleans/hostnames/paths — never secrets), `auditChain` (the `audit verify` result,
+or `{"enabled": false}` when audit logging is off), `auditRecent` (last 200 audit
+records), and `controls` (a self-assessment mirroring {doc}`cmmc`'s implemented
+rows, cited Family + bare NIST SP 800-171 ID). Defaults to writing into the current
+directory; `--out` picks a different directory. Not a certification — see
+{doc}`cmmc`.
 
 ## `secagent mcp`
 
