@@ -181,6 +181,17 @@ normal way these fields get set (`secagent init --domain ...` writes them into
 shared by both identities — SecSSO serves one token endpoint per instance regardless
 of which grant/client is authenticating against it.
 
+```{note}
+These are standard OIDC endpoints, not SecSSO-specific ones — any OIDC provider works.
+For an **external IdP such as Azure Entra ID** (a deployment run `--without secsso`), set
+`token_url` and `device_authorization_url` to the provider's endpoints by hand;
+`secagent init --domain` only templates SecSSO/Authentik paths, and for Entra `scope` must
+be `<resource>/.default` while `device_scope` requests the delegated API scope you exposed.
+The full mapping — Entra endpoints, scopes, the matching SecRouter `security.oidc` verifier
+block, and the SecChat/SecRecorder variables — is the *Bring your own IdP and CA* runbook in
+your SecDeploy deployment (`docs/bring-your-own-idp-and-ca.md`).
+```
+
 ```yaml
 secsso:
   # -- service identity ("secagent token") --
